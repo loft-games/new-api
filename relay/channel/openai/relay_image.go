@@ -1,12 +1,15 @@
 package openai
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -16,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -103,6 +107,13 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	if !strings.Contains(contentType, "text/event-stream") {
 		return openaiImageJSONAsStreamHandler(c, info, resp)
 	}
+	isJSONBody, peekErr := openaiImageStreamBodyStartsWithJSON(c, info, resp)
+	if peekErr != nil {
+		return nil, types.NewOpenAIError(peekErr, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+	if isJSONBody {
+		return openaiImageJSONAsStreamHandler(c, info, resp)
+	}
 	// Reuse the shared streaming engine (helper.StreamScannerHandler) so the
 	// image streaming path gets the same ping keepalive, streaming-timeout
 	// watchdog, client-disconnect detection, panic recovery and goroutine
@@ -112,10 +123,12 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 	usage := &dto.Usage{}
 	var lastStreamData []byte
 	var completedImages int64
+	var receivedStreamData bool
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
 		lastStreamData = raw
+		receivedStreamData = true
 		if isOpenAIImageStreamErrorEvent(raw) {
 			// Record the error as a soft error; the scanner drives the final
 			// EndReason. HasErrors() flags the failure for logging/handling.
@@ -138,6 +151,12 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 			sr.Stop(err)
 		}
 	})
+
+	if !receivedStreamData && info.StreamStatus != nil &&
+		(info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone ||
+			info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF) {
+		return nil, types.NewOpenAIError(fmt.Errorf("empty image stream response"), types.ErrorCodeBadResponse, http.StatusBadGateway)
+	}
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
@@ -165,6 +184,86 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 		}
 	}
 	return usage, nil
+}
+
+type preservingReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+func openaiImageStreamBodyStartsWithJSON(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (bool, error) {
+	originalBody := resp.Body
+	reader := bufio.NewReader(originalBody)
+	var prefix bytes.Buffer
+
+	stopPing, pingDone := startOpenAIImageStreamPeekPing(c, info)
+	defer func() {
+		if stopPing != nil {
+			stopPing()
+			<-pingDone
+		}
+	}()
+
+	for {
+		b, err := reader.ReadByte()
+		if err != nil {
+			if err == io.EOF {
+				resp.Body = preservingReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: originalBody}
+				return false, nil
+			}
+			resp.Body = preservingReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: originalBody}
+			return false, err
+		}
+		prefix.WriteByte(b)
+		if b == ' ' || b == '\n' || b == '\r' || b == '\t' {
+			continue
+		}
+		resp.Body = preservingReadCloser{Reader: io.MultiReader(bytes.NewReader(prefix.Bytes()), reader), Closer: originalBody}
+		return b == '{' || b == '[', nil
+	}
+}
+
+func startOpenAIImageStreamPeekPing(c *gin.Context, info *relaycommon.RelayInfo) (func(), <-chan struct{}) {
+	if c == nil || c.Request == nil || info == nil || info.DisablePing {
+		return nil, nil
+	}
+	generalSettings := operation_setting.GetGeneralSetting()
+	if !generalSettings.PingIntervalEnabled {
+		return nil, nil
+	}
+	helper.SetEventStreamHeaders(c)
+
+	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
+	if pingInterval <= 0 {
+		pingInterval = helper.DefaultPingInterval
+	}
+
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	var pingMutex sync.Mutex
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(pingInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				pingMutex.Lock()
+				helper.ExtendWriteDeadline(c)
+				err := helper.PingData(c)
+				pingMutex.Unlock()
+				if err != nil {
+					logger.LogDebug(c, "image stream peek ping stopped: %s", err.Error())
+					return
+				}
+			case <-stop:
+				return
+			case <-c.Request.Context().Done():
+				return
+			}
+		}
+	}()
+	return func() { close(stop) }, done
 }
 
 // writeOpenaiImageStreamChunk rebuilds the SSE frame for an image stream chunk:
