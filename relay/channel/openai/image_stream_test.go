@@ -108,6 +108,25 @@ func TestOpenaiImageStreamHandlerForwardsSSEAndUsage(t *testing.T) {
 	require.Equal(t, 3.0, info.PriceData.OtherRatios()["n"], "streams without completed events keep the requested count")
 }
 
+func TestOpenaiImageStreamHandlerRejectsEmptySSE(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	c, recorder, resp, info := newImageTestContext(t, "", "text/event-stream", true)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+
+	require.Nil(t, usage)
+	require.NotNil(t, err)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	require.Empty(t, recorder.Body.String())
+}
+
 func TestOpenaiImageStreamHandlerUsesCompletedEventCount(t *testing.T) {
 	oldMode := gin.Mode()
 	gin.SetMode(gin.TestMode)
@@ -304,6 +323,35 @@ func TestOpenaiImageStreamHandlerWrapsJSONResponse(t *testing.T) {
 	require.Equal(t, 1, usage.PromptTokensDetails.TextTokens)
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
 	require.Empty(t, recorder.Header().Get("Content-Length"))
+	require.Contains(t, recorder.Body.String(), `event: image_generation.completed`)
+	require.Contains(t, recorder.Body.String(), `"type":"image_generation.completed"`)
+	require.Contains(t, recorder.Body.String(), `"b64_json":"first"`)
+	require.Contains(t, recorder.Body.String(), `"b64_json":"second"`)
+	require.Contains(t, recorder.Body.String(), `"revised_prompt":"draw a cat"`)
+	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
+	require.Equal(t, 2, strings.Count(recorder.Body.String(), `event: image_generation.completed`))
+	require.Equal(t, 2.0, info.PriceData.OtherRatios()["n"])
+}
+
+func TestOpenaiImageStreamHandlerWrapsJSONBodyWithSSEContentType(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	body := "\n\t " + `{"created":1710000000,"data":[{"b64_json":"first","revised_prompt":"draw a cat"},{"b64_json":"second"}],"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`
+
+	c, recorder, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+	info.PriceData.UsePrice = true
+	info.PriceData.AddOtherRatio("n", 3)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.Equal(t, 3, usage.PromptTokens)
+	require.Equal(t, 4, usage.CompletionTokens)
+	require.Equal(t, 7, usage.TotalTokens)
+	require.Equal(t, 2, usage.PromptTokensDetails.ImageTokens)
+	require.Equal(t, 1, usage.PromptTokensDetails.TextTokens)
+	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
 	require.Contains(t, recorder.Body.String(), `event: image_generation.completed`)
 	require.Contains(t, recorder.Body.String(), `"type":"image_generation.completed"`)
 	require.Contains(t, recorder.Body.String(), `"b64_json":"first"`)
