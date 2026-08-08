@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -228,7 +229,9 @@ func startOpenAIImageStreamPeekPing(c *gin.Context, info *relaycommon.RelayInfo)
 		return nil, nil
 	}
 	generalSettings := operation_setting.GetGeneralSetting()
-	if !generalSettings.PingIntervalEnabled {
+	imageStreamRequiresHeartbeat := info.RelayMode == relayconstant.RelayModeImagesGenerations ||
+		info.RelayMode == relayconstant.RelayModeImagesEdits
+	if !generalSettings.PingIntervalEnabled && !imageStreamRequiresHeartbeat {
 		return nil, nil
 	}
 	helper.SetEventStreamHeaders(c)
