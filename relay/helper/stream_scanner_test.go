@@ -406,9 +406,10 @@ func TestStreamScannerHandler_PingSentDuringSlowUpstream(t *testing.T) {
 	assert.Equal(t, int64(4), count.Load())
 
 	body := recorder.Body.String()
-	pingCount := strings.Count(body, ": PING")
-	assert.GreaterOrEqual(t, pingCount, 1,
-		"expected at least 1 ping during slow stream with 1s interval; got %d", pingCount)
+	assert.NotContains(t, body, ": PING")
+	heartbeatCount := strings.Count(body, "\n")
+	assert.GreaterOrEqual(t, heartbeatCount, 1,
+		"expected at least 1 blank heartbeat during slow stream with 1s interval; got %d", heartbeatCount)
 }
 
 func TestStreamScannerHandler_PingDisabledByRelayInfo(t *testing.T) {
@@ -450,8 +451,7 @@ func TestStreamScannerHandler_PingDisabledByRelayInfo(t *testing.T) {
 	assert.Equal(t, int64(5), count.Load())
 
 	body := recorder.Body.String()
-	pingCount := strings.Count(body, ": PING")
-	assert.Equal(t, 0, pingCount, "pings should be disabled when DisablePing=true")
+	assert.NotContains(t, body, ": PING")
 }
 
 // ---------- StreamStatus integration ----------
@@ -702,4 +702,19 @@ func TestSetEventStreamHeadersBoundsStreamWritesByBudget(t *testing.T) {
 	require.NotEmpty(t, recorder.deadlines)
 	assert.False(t, recorder.deadlines[0].Before(before.Add(streamWriteTimeout+450*time.Second)))
 	assert.Contains(t, recorder.Body.String(), "data: AAAA")
+}
+
+func TestPingDataWritesBlankHeartbeat(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+
+	err := PingData(c)
+
+	require.NoError(t, err)
+	require.Equal(t, "\n", recorder.Body.String())
 }

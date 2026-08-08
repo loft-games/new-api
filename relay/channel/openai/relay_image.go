@@ -13,6 +13,7 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -224,7 +225,8 @@ func openaiImageStreamBodyStartsWithJSON(c *gin.Context, info *relaycommon.Relay
 
 	if c != nil && c.Request != nil && info != nil && !info.DisablePing {
 		settings := operation_setting.GetGeneralSetting()
-		if settings.PingIntervalEnabled {
+		imageStreamRequiresHeartbeat := info.RelayMode == relayconstant.RelayModeImagesGenerations || info.RelayMode == relayconstant.RelayModeImagesEdits
+		if settings.PingIntervalEnabled || imageStreamRequiresHeartbeat {
 			stopPing := helper.StartStreamKeepAlive(c, time.Duration(settings.PingIntervalSeconds)*time.Second)
 			defer stopPing()
 		}
