@@ -6213,6 +6213,26 @@
     "Zero retention": "零数据保留",
     "Zhipu": "智谱",
     "Zhipu V4": "智谱 V4",
-    "Zoom": "缩放"
+    "Zoom": "缩放",
+    "Import Codex Auth JSON": "导入 Codex Auth JSON",
+    "Import auth JSON": "导入 auth JSON",
+    "Paste a new-api, CLIProxyAPI, or sub2api Codex auth JSON file to convert it into the current channel key format.": "粘贴 new-api、CLIProxyAPI 或 sub2api 的 Codex auth JSON 文件，将其转换为当前渠道 key 格式。",
+    "Paste Codex auth JSON here": "在此粘贴 Codex auth JSON",
+    "Paste auth JSON first": "请先粘贴 auth JSON",
+    "Failed to parse auth JSON": "解析 auth JSON 失败",
+    "Auth JSON parsed": "auth JSON 已解析",
+    "Codex auth JSON imported": "Codex auth JSON 已导入",
+    "Detected format: {{format}}": "识别到格式：{{format}}",
+    "Suggested channel name: {{name}}": "建议渠道名称：{{name}}",
+    "Suggested proxy URL: {{url}}": "建议代理 URL：{{url}}",
+    "Parse": "解析",
+    "Export Codex Auth as new-api": "导出 Codex Auth 为 new-api",
+    "Export Codex Auth as CLIProxyAPI": "导出 Codex Auth 为 CLIProxyAPI",
+    "Export Codex Auth as sub2api": "导出 Codex Auth 为 sub2api",
+    "Failed to export auth JSON": "导出 auth JSON 失败",
+    "Verify to export Codex auth JSON": "验证后导出 Codex auth JSON",
+    "Use Passkey or 2FA to confirm your identity before exporting this channel credential.": "导出此渠道凭据前，请使用 Passkey 或 2FA 确认身份。",
+    "refresh_token is empty; automatic credential refresh will be unavailable": "refresh_token 为空；将无法自动刷新凭据",
+    "id_token is empty": "id_token 为空"
   }
 }

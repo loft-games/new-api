@@ -6213,6 +6213,26 @@
     "Zero retention": "Aucune rétention",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Import Codex Auth JSON": "Importer Codex Auth JSON",
+    "Import auth JSON": "Importer auth JSON",
+    "Paste a new-api, CLIProxyAPI, or sub2api Codex auth JSON file to convert it into the current channel key format.": "Collez un fichier Codex auth JSON new-api, CLIProxyAPI ou sub2api pour le convertir au format de clé de canal actuel.",
+    "Paste Codex auth JSON here": "Collez le Codex auth JSON ici",
+    "Paste auth JSON first": "Collez d’abord le auth JSON",
+    "Failed to parse auth JSON": "Échec de l’analyse du auth JSON",
+    "Auth JSON parsed": "auth JSON analysé",
+    "Codex auth JSON imported": "Codex auth JSON importé",
+    "Detected format: {{format}}": "Format détecté : {{format}}",
+    "Suggested channel name: {{name}}": "Nom de canal suggéré : {{name}}",
+    "Suggested proxy URL: {{url}}": "URL de proxy suggérée : {{url}}",
+    "Parse": "Analyser",
+    "Export Codex Auth as new-api": "Exporter Codex Auth en new-api",
+    "Export Codex Auth as CLIProxyAPI": "Exporter Codex Auth en CLIProxyAPI",
+    "Export Codex Auth as sub2api": "Exporter Codex Auth en sub2api",
+    "Failed to export auth JSON": "Échec de l’export du auth JSON",
+    "Verify to export Codex auth JSON": "Vérifier pour exporter Codex auth JSON",
+    "Use Passkey or 2FA to confirm your identity before exporting this channel credential.": "Utilisez Passkey ou la 2FA pour confirmer votre identité avant d’exporter cet identifiant de canal.",
+    "refresh_token is empty; automatic credential refresh will be unavailable": "refresh_token est vide ; le renouvellement automatique des identifiants sera indisponible",
+    "id_token is empty": "id_token est vide"
   }
 }

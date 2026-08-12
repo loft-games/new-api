@@ -87,6 +87,30 @@ func TestValidateChannelRequiresNewAPIBaseURL(t *testing.T) {
 	}
 }
 
+func TestValidateChannelNormalizesCodexAuthJSON(t *testing.T) {
+	channel := &model.Channel{
+		Type: constant.ChannelTypeCodex,
+		Key: `{
+			"provider": "codex",
+			"metadata": {
+				"access_token": " access-cli ",
+				"refresh_token": "refresh-cli",
+				"id_token": "id-cli",
+				"account_id": "acct-cli"
+			}
+		}`,
+	}
+
+	err := validateChannel(channel, true)
+	require.NoError(t, err)
+
+	var key service.CodexOAuthKey
+	require.NoError(t, common.Unmarshal([]byte(channel.Key), &key))
+	assert.Equal(t, "access-cli", key.AccessToken)
+	assert.Equal(t, "acct-cli", key.AccountID)
+	assert.Equal(t, "codex", key.Type)
+}
+
 func TestNewAPIChannelRegistration(t *testing.T) {
 	apiType, ok := common.ChannelType2APIType(constant.ChannelTypeNewAPI)
 
