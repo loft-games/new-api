@@ -537,6 +537,28 @@ export const STATIC_I18N_KEYS = [
   'OpenAI Models upstream path must not contain {model}',
   'OpenAI Models route is required to enable upstream model checks',
 
+  // Codex auth JSON import/export
+  'Import Codex Auth JSON',
+  'Import auth JSON',
+  'Paste a new-api, CLIProxyAPI, or sub2api Codex auth JSON file to convert it into the current channel key format.',
+  'Paste Codex auth JSON here',
+  'Paste auth JSON first',
+  'Failed to parse auth JSON',
+  'Auth JSON parsed',
+  'Codex auth JSON imported',
+  'Detected format: {{format}}',
+  'Suggested channel name: {{name}}',
+  'Suggested proxy URL: {{url}}',
+  'Parse',
+  'Export Codex Auth as new-api',
+  'Export Codex Auth as CLIProxyAPI',
+  'Export Codex Auth as sub2api',
+  'Failed to export auth JSON',
+  'Verify to export Codex auth JSON',
+  'Use Passkey or 2FA to confirm your identity before exporting this channel credential.',
+  'refresh_token is empty; automatic credential refresh will be unavailable',
+  'id_token is empty',
+
   // Dashboard flow stages (labels/descriptions passed to t at runtime)
   'User',
   'Node',

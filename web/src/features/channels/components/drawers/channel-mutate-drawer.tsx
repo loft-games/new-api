@@ -42,6 +42,7 @@ import {
   Settings,
   SlidersHorizontal,
   Wand2,
+  Upload,
 } from 'lucide-react'
 import {
   type ReactNode,
@@ -174,6 +175,7 @@ import {
 import type { Channel } from '../../types'
 import { useChannels } from '../channels-provider'
 import { AdvancedCustomEditorDialog } from '../dialogs/advanced-custom-editor-dialog'
+import { CodexAuthJSONImportDialog } from '../dialogs/codex-auth-json-import-dialog'
 import { FetchModelsDialog } from '../dialogs/fetch-models-dialog'
 import {
   MissingModelsConfirmationDialog,
@@ -622,6 +624,8 @@ export function ChannelMutateDrawer({
   const [channelKey, setChannelKey] = useState<string | null>(null)
   const [isChannelKeyLoading, setIsChannelKeyLoading] = useState(false)
   const [isCodexCredentialRefreshing, setIsCodexCredentialRefreshing] =
+    useState(false)
+  const [codexAuthJSONImportOpen, setCodexAuthJSONImportOpen] =
     useState(false)
   const initialModelsRef = useRef<string[]>([])
   const initialModelMappingRef = useRef<string>('')
@@ -1412,6 +1416,25 @@ export function ChannelMutateDrawer({
       setIsCodexCredentialRefreshing(false)
     }
   }, [channelId, queryClient, t])
+
+  const handleImportCodexAuthJSON = useCallback(
+    (key: string, suggestedChannelName?: string) => {
+      form.setValue('key', key, {
+        shouldDirty: true,
+        shouldTouch: true,
+        shouldValidate: true,
+      })
+      if (!form.getValues('name').trim() && suggestedChannelName?.trim()) {
+        form.setValue('name', suggestedChannelName.trim(), {
+          shouldDirty: true,
+          shouldTouch: true,
+          shouldValidate: true,
+        })
+      }
+      toast.success(t('Codex auth JSON imported'))
+    },
+    [form, t]
+  )
 
   // Unified function to update models
   const updateModels = useCallback(
@@ -3086,6 +3109,18 @@ export function ChannelMutateDrawer({
                                       )}
                                     </div>
                                     <div className='flex flex-wrap items-center gap-2'>
+                                      <Button
+                                        type='button'
+                                        variant='outline'
+                                        size='sm'
+                                        onClick={() =>
+                                          setCodexAuthJSONImportOpen(true)
+                                        }
+                                        disabled={sensitiveLocked}
+                                      >
+                                        <Upload className='mr-2 h-4 w-4' />
+                                        {t('Import auth JSON')}
+                                      </Button>
                                       {isEditing && channelId && (
                                         <Button
                                           type='button'
@@ -4825,6 +4860,12 @@ export function ChannelMutateDrawer({
           shouldPreviewUnsavedModels ? currentName?.trim() : undefined
         }
         existingModelsOverride={currentModelsArray}
+      />
+
+      <CodexAuthJSONImportDialog
+        open={codexAuthJSONImportOpen}
+        onOpenChange={setCodexAuthJSONImportOpen}
+        onImport={handleImportCodexAuthJSON}
       />
 
       <SecureVerificationDialog

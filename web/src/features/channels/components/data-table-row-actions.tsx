@@ -34,7 +34,7 @@ import {
   RefreshCw,
   Loader2,
 } from 'lucide-react'
-import { useContext, useState } from 'react'
+import { useCallback, useContext, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -57,8 +57,10 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { ROLE } from '@/lib/roles'
 import { useAuthStore } from '@/stores/auth-store'
 
+import type { CodexAuthJSONFormat } from '../api'
 import { MODEL_FETCHABLE_TYPES } from '../constants'
 import {
   channelsQueryKeys,
@@ -72,6 +74,7 @@ import { parseUpstreamUpdateMeta } from '../lib/upstream-update-utils'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { useChannels } from './channels-provider'
+import { CodexAuthJSONExportDialog } from './dialogs/codex-auth-json-export-dialog'
 
 interface DataTableRowActionsProps {
   row: Row<Channel>
@@ -87,6 +90,8 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false)
   const [isTesting, setIsTesting] = useState(false)
   const [isTogglingStatus, setIsTogglingStatus] = useState(false)
+  const [codexAuthExportFormat, setCodexAuthExportFormat] =
+    useState<CodexAuthJSONFormat | null>(null)
 
   const isEnabled = isChannelEnabled(channel)
   const isMultiKey = isMultiKeyChannel(channel)
@@ -95,6 +100,20 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
     ADMIN_PERMISSION_RESOURCES.CHANNEL,
     ADMIN_PERMISSION_ACTIONS.SENSITIVE_WRITE
   )
+  const canExportCodexAuth = currentUser?.role === ROLE.SUPER_ADMIN
+  const downloadJSONFile = useCallback((filename: string, content: unknown) => {
+    const blob = new Blob([JSON.stringify(content, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = filename
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    URL.revokeObjectURL(url)
+  }, [])
 
   const handleEdit = () => {
     setCurrentRow(channel)
@@ -362,6 +381,36 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             </DropdownMenuItem>
           )}
 
+          {channel.type === 57 && canExportCodexAuth && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem
+                onClick={() => setCodexAuthExportFormat('new-api')}
+              >
+                {t('Export Codex Auth as new-api')}
+                <DropdownMenuShortcut>
+                  <Download size={16} />
+                </DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setCodexAuthExportFormat('CLIProxyAPI')}
+              >
+                {t('Export Codex Auth as CLIProxyAPI')}
+                <DropdownMenuShortcut>
+                  <Download size={16} />
+                </DropdownMenuShortcut>
+              </DropdownMenuItem>
+              <DropdownMenuItem
+                onClick={() => setCodexAuthExportFormat('sub2api')}
+              >
+                {t('Export Codex Auth as sub2api')}
+                <DropdownMenuShortcut>
+                  <Download size={16} />
+                </DropdownMenuShortcut>
+              </DropdownMenuItem>
+            </>
+          )}
+
           <DropdownMenuSeparator />
 
           {/* Delete */}
@@ -398,6 +447,19 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           setDeleteConfirmOpen(false)
         }}
       />
+
+      {codexAuthExportFormat ? (
+        <CodexAuthJSONExportDialog
+          channelId={channel.id}
+          format={codexAuthExportFormat}
+          onDownloaded={downloadJSONFile}
+          onOpenChange={(open) => {
+            if (!open) {
+              setCodexAuthExportFormat(null)
+            }
+          }}
+        />
+      ) : null}
     </div>
   )
 }

@@ -73,6 +73,41 @@ export type CodexCredentialRefreshResponse = {
   }
 }
 
+export type CodexAuthJSONFormat = 'new-api' | 'CLIProxyAPI' | 'sub2api'
+
+export type CodexOAuthKey = {
+  id_token?: string
+  access_token?: string
+  refresh_token?: string
+  account_id?: string
+  last_refresh?: string
+  email?: string
+  type?: string
+  expired?: string
+}
+
+export type CodexAuthJSONNormalizeResponse = {
+  success: boolean
+  message?: string
+  data?: {
+    format: CodexAuthJSONFormat
+    key: CodexOAuthKey
+    warnings: string[]
+    suggested_channel_name?: string
+    suggested_proxy_url?: string
+  }
+}
+
+export type CodexAuthJSONExportResponse = {
+  success: boolean
+  message?: string
+  data?: {
+    filename: string
+    content_type: string
+    content: unknown
+  }
+}
+
 // ============================================================================
 // Base Channel CRUD Operations
 // ============================================================================
@@ -318,6 +353,32 @@ export async function refreshCodexCredential(
     `/api/channel/${channelId}/codex/refresh`,
     {},
     channelActionConfig()
+  )
+  return res.data
+}
+
+export async function normalizeCodexAuthJSON(
+  content: string
+): Promise<CodexAuthJSONNormalizeResponse> {
+  const res = await api.post(
+    '/api/channel/codex/auth-json/normalize',
+    { content },
+    channelActionConfig()
+  )
+  return res.data
+}
+
+export async function exportCodexAuthJSON(
+  channelId: number,
+  format: CodexAuthJSONFormat,
+  proofToken?: string
+): Promise<CodexAuthJSONExportResponse> {
+  const res = await api.post(
+    `/api/channel/${channelId}/codex/auth-json/export`,
+    { format },
+    channelActionConfig({
+      headers: proofToken ? { 'X-Security-Proof': proofToken } : undefined,
+    })
   )
   return res.data
 }

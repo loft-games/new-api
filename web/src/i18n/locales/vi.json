@@ -5265,6 +5265,26 @@
     "Zero retention": "Không lưu dữ liệu",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Import Codex Auth JSON": "Nhập Codex Auth JSON",
+    "Import auth JSON": "Nhập auth JSON",
+    "Paste a new-api, CLIProxyAPI, or sub2api Codex auth JSON file to convert it into the current channel key format.": "Dán tệp Codex auth JSON từ new-api, CLIProxyAPI hoặc sub2api để chuyển đổi sang định dạng key kênh hiện tại.",
+    "Paste Codex auth JSON here": "Dán Codex auth JSON tại đây",
+    "Paste auth JSON first": "Hãy dán auth JSON trước",
+    "Failed to parse auth JSON": "Không thể phân tích auth JSON",
+    "Auth JSON parsed": "Đã phân tích auth JSON",
+    "Codex auth JSON imported": "Đã nhập Codex auth JSON",
+    "Detected format: {{format}}": "Định dạng phát hiện: {{format}}",
+    "Suggested channel name: {{name}}": "Tên kênh đề xuất: {{name}}",
+    "Suggested proxy URL: {{url}}": "Proxy URL đề xuất: {{url}}",
+    "Parse": "Phân tích",
+    "Export Codex Auth as new-api": "Xuất Codex Auth dạng new-api",
+    "Export Codex Auth as CLIProxyAPI": "Xuất Codex Auth dạng CLIProxyAPI",
+    "Export Codex Auth as sub2api": "Xuất Codex Auth dạng sub2api",
+    "Failed to export auth JSON": "Không thể xuất auth JSON",
+    "Verify to export Codex auth JSON": "Xác minh để xuất Codex auth JSON",
+    "Use Passkey or 2FA to confirm your identity before exporting this channel credential.": "Dùng Passkey hoặc 2FA để xác nhận danh tính trước khi xuất thông tin xác thực kênh này.",
+    "refresh_token is empty; automatic credential refresh will be unavailable": "refresh_token trống; không thể tự động làm mới thông tin xác thực",
+    "id_token is empty": "id_token trống"
   }
 }

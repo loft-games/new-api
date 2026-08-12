@@ -156,16 +156,60 @@ function isCodexCredential(value: string | undefined): boolean {
   try {
     const parsed = parseOptionalJson(value)
     if (parsed === undefined) return true
-    return (
-      isJsonObjectValue(parsed) &&
-      typeof parsed.access_token === 'string' &&
-      parsed.access_token.trim().length > 0 &&
-      typeof parsed.account_id === 'string' &&
-      parsed.account_id.trim().length > 0
-    )
+    if (!isJsonObjectValue(parsed)) return false
+    if (hasCodexOAuthTokens(parsed)) return true
+    const provider = firstJsonValue(parsed, 'provider', 'Provider')
+    const metadata = firstJsonValue(parsed, 'metadata', 'Metadata')
+    const tokenData = firstJsonValue(parsed, 'token_data', 'TokenData')
+    const storage = firstJsonValue(parsed, 'storage', 'Storage')
+    if (
+      typeof provider === 'string' &&
+      provider.toLowerCase() === 'codex' &&
+      isJsonObjectValue(metadata) &&
+      hasCodexOAuthTokens(metadata)
+    ) {
+      return true
+    }
+    if (isJsonObjectValue(tokenData)) {
+      return hasCodexOAuthTokens(tokenData)
+    }
+    if (isJsonObjectValue(storage)) {
+      return hasCodexOAuthTokens(storage)
+    }
+    if (isJsonObjectValue(parsed.credentials)) {
+      return hasCodexOAuthTokens(parsed.credentials)
+    }
+    return false
   } catch {
     return false
   }
+}
+
+function hasCodexOAuthTokens(value: Record<string, unknown>): boolean {
+  let accountId = ''
+  if (typeof value.account_id === 'string') {
+    accountId = value.account_id
+  } else if (typeof value.chatgpt_account_id === 'string') {
+    accountId = value.chatgpt_account_id
+  }
+
+  return (
+    typeof value.access_token === 'string' &&
+    value.access_token.trim().length > 0 &&
+    accountId.trim().length > 0
+  )
+}
+
+function firstJsonValue(
+  value: Record<string, unknown>,
+  ...keys: string[]
+): unknown {
+  for (const key of keys) {
+    if (key in value) {
+      return value[key]
+    }
+  }
+  return undefined
 }
 
 function isVertexJsonKey(value: string | undefined): boolean {
