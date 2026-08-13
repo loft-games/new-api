@@ -24,12 +24,23 @@ type ChannelSettings struct {
 	// HTTP2ConnectionShards spreads HTTP/2 traffic across N independent transports
 	// (1-8). Zero/unset means 1. Ignored when HTTPProtocol is "http1".
 	HTTP2ConnectionShards int `json:"http2_connection_shards,omitempty"`
+	// CodexFingerprintMode controls Codex OAuth outbound device/session identity convergence.
+	CodexFingerprintMode string `json:"codex_fingerprint_mode,omitempty"`
+	// CodexDeviceID optionally pins the upstream-visible Codex installation id.
+	CodexDeviceID string `json:"codex_device_id,omitempty"`
 }
 
 const (
 	HTTPProtocolAuto         = "auto"
 	HTTPProtocolHTTP1        = "http1"
 	MaxHTTP2ConnectionShards = 8
+)
+
+const (
+	CodexFingerprintModeOff     = "off"
+	CodexFingerprintModeDevice  = "device"
+	CodexFingerprintModeSession = "session"
+	CodexFingerprintModeFull    = "full"
 )
 
 // ValidateHTTPTransport validates save-time HTTP transport channel settings.
@@ -48,6 +59,18 @@ func (s *ChannelSettings) ValidateHTTPTransport() error {
 	}
 	if protocol == HTTPProtocolHTTP1 && s.HTTP2ConnectionShards > 1 {
 		return fmt.Errorf("http2_connection_shards must be 1 when http_protocol is http1")
+	}
+	switch strings.ToLower(strings.TrimSpace(s.CodexFingerprintMode)) {
+	case "", CodexFingerprintModeOff, CodexFingerprintModeDevice, CodexFingerprintModeSession, CodexFingerprintModeFull:
+	default:
+		return fmt.Errorf("invalid codex_fingerprint_mode: %s", s.CodexFingerprintMode)
+	}
+	deviceID := strings.TrimSpace(s.CodexDeviceID)
+	if strings.ContainsAny(deviceID, "\r\n") {
+		return fmt.Errorf("codex_device_id must not contain line breaks")
+	}
+	if len(deviceID) > 128 {
+		return fmt.Errorf("codex_device_id is too long")
 	}
 	return nil
 }

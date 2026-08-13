@@ -89,6 +89,8 @@ export interface ChannelSettings {
   system_prompt_override?: boolean
   http_protocol?: 'auto' | 'http1' | string
   http2_connection_shards?: number
+  codex_fingerprint_mode?: 'off' | 'device' | 'session' | 'full' | string
+  codex_device_id?: string
 }
 
 export interface ChannelOtherSettings {

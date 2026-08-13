@@ -20,6 +20,7 @@ import { z } from 'zod'
 
 import {
   CLAUDE_FIELD_PASSTHROUGH_TYPES,
+  CHANNEL_TYPE_CODEX,
   CHANNEL_TYPE_NEW_API,
   CHANNEL_TYPE_TASK_PLUGIN,
   CHANNEL_STATUS,
@@ -266,6 +267,18 @@ export const channelFormSchema = z
     pass_through_body_enabled: z.boolean().optional(),
     system_prompt: z.string().optional(),
     system_prompt_override: z.boolean().optional(),
+    codex_fingerprint_mode: z
+      .enum(['off', 'device', 'session', 'full'])
+      .optional(),
+    codex_device_id: z
+      .string()
+      .optional()
+      .refine((value) => !value || !/[\r\n]/.test(value), {
+        message: 'Codex device ID must not contain line breaks',
+      })
+      .refine((value) => !value || value.trim().length <= 128, {
+        message: 'Codex device ID is too long',
+      }),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
     vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
@@ -344,7 +357,7 @@ export const channelFormSchema = z
       )
     }
 
-    if (data.type === 57) {
+    if (data.type === CHANNEL_TYPE_CODEX) {
       if (data.multi_key_mode && data.multi_key_mode !== 'single') {
         addRequiredIssue(
           ctx,
@@ -447,6 +460,8 @@ export const CHANNEL_FORM_DEFAULT_VALUES: ChannelFormValues = {
   pass_through_body_enabled: false,
   system_prompt: '',
   system_prompt_override: false,
+  codex_fingerprint_mode: 'session',
+  codex_device_id: '',
   // Type-specific settings
   is_enterprise_account: false,
   vertex_key_type: 'json',
@@ -488,6 +503,8 @@ export function transformChannelToFormDefaults(
     pass_through_body_enabled: false,
     system_prompt: '',
     system_prompt_override: false,
+    codex_fingerprint_mode: 'session' as 'off' | 'device' | 'session' | 'full',
+    codex_device_id: '',
   }
 
   if (channel.setting) {
@@ -507,6 +524,14 @@ export function transformChannelToFormDefaults(
         pass_through_body_enabled: parsed.pass_through_body_enabled || false,
         system_prompt: parsed.system_prompt || '',
         system_prompt_override: parsed.system_prompt_override || false,
+        codex_fingerprint_mode:
+          channel.type === CHANNEL_TYPE_CODEX &&
+          ['off', 'device', 'session', 'full'].includes(
+            parsed.codex_fingerprint_mode
+          )
+            ? parsed.codex_fingerprint_mode
+            : 'session',
+        codex_device_id: parsed.codex_device_id || '',
       }
     } catch (error) {
       // eslint-disable-next-line no-console
@@ -641,6 +666,15 @@ export function buildSettingJSON(formData: ChannelFormValues): string {
     settingObj.http_protocol = HTTP_PROTOCOL_HTTP1
   } else if (shards > 1) {
     settingObj.http2_connection_shards = shards
+  }
+
+  if (formData.type === CHANNEL_TYPE_CODEX) {
+    settingObj.codex_fingerprint_mode =
+      formData.codex_fingerprint_mode || 'session'
+    const codexDeviceID = formData.codex_device_id?.trim()
+    if (codexDeviceID) {
+      settingObj.codex_device_id = codexDeviceID
+    }
   }
 
   return JSON.stringify(settingObj)

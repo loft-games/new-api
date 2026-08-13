@@ -654,3 +654,19 @@ func TestChannelOtherSettingsValidateToolLossPolicy(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "tool_loss_policy")
 }
+
+func TestChannelSettingsValidateCodexFingerprintSettings(t *testing.T) {
+	require.NoError(t, (&ChannelSettings{}).ValidateHTTPTransport())
+	require.NoError(t, (&ChannelSettings{CodexFingerprintMode: "off"}).ValidateHTTPTransport())
+	require.NoError(t, (&ChannelSettings{CodexFingerprintMode: "device"}).ValidateHTTPTransport())
+	require.NoError(t, (&ChannelSettings{CodexFingerprintMode: "session"}).ValidateHTTPTransport())
+	require.NoError(t, (&ChannelSettings{CodexFingerprintMode: "full", CodexDeviceID: "device-123"}).ValidateHTTPTransport())
+
+	err := (&ChannelSettings{CodexFingerprintMode: "invalid"}).ValidateHTTPTransport()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "invalid codex_fingerprint_mode")
+
+	err = (&ChannelSettings{CodexDeviceID: "device\r\nx-injected: 1"}).ValidateHTTPTransport()
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "codex_device_id")
+}
