@@ -138,6 +138,7 @@ import {
 } from '../../api'
 import {
   ADD_MODE_OPTIONS,
+  CHANNEL_TYPE_CODEX,
   CHANNEL_STATUS_LABELS,
   CHANNEL_TYPE_OPTIONS,
   CHANNEL_TYPE_WARNINGS,
@@ -289,6 +290,8 @@ const SENSITIVE_FORM_FIELDS = [
   'pass_through_body_enabled',
   'system_prompt',
   'system_prompt_override',
+  'codex_fingerprint_mode',
+  'codex_device_id',
   'allow_service_tier',
   'disable_store',
   'allow_safety_identifier',
@@ -341,6 +344,10 @@ function hasAdvancedSettingsValues(values: ChannelFormValues): boolean {
     values.thinking_to_content ||
     values.pass_through_body_enabled ||
     values.system_prompt_override ||
+    (values.type === CHANNEL_TYPE_CODEX &&
+      values.codex_fingerprint_mode &&
+      values.codex_fingerprint_mode !== 'session') ||
+    (values.type === CHANNEL_TYPE_CODEX && values.codex_device_id?.trim()) ||
     (values.http_protocol && values.http_protocol !== 'auto') ||
     (values.http2_connection_shards != null &&
       values.http2_connection_shards > 1) ||
@@ -754,6 +761,7 @@ export function ChannelMutateDrawer({
   const currentHttp2ConnectionShards = form.watch('http2_connection_shards')
   const currentSystemPrompt = form.watch('system_prompt')
   const currentSystemPromptOverride = form.watch('system_prompt_override')
+  const currentCodexFingerprintMode = form.watch('codex_fingerprint_mode')
   const currentAllowServiceTier = form.watch('allow_service_tier')
   const currentDisableStore = form.watch('disable_store')
   const currentAllowSafetyIdentifier = form.watch('allow_safety_identifier')
@@ -4316,6 +4324,102 @@ export function ChannelMutateDrawer({
                                 )
                               }}
                             />
+
+                            {currentType === CHANNEL_TYPE_CODEX && (
+                              <>
+                                <FormField
+                                  control={form.control}
+                                  name='codex_fingerprint_mode'
+                                  render={({ field }) => (
+                                    <FormItem>
+                                      <FormLabel>
+                                        {t('Codex fingerprint convergence')}
+                                      </FormLabel>
+                                      <Select
+                                        items={[
+                                          {
+                                            value: 'off',
+                                            label: t('Off'),
+                                          },
+                                          {
+                                            value: 'device',
+                                            label: t('Device'),
+                                          },
+                                          {
+                                            value: 'session',
+                                            label: t('Session'),
+                                          },
+                                          {
+                                            value: 'full',
+                                            label: t('Full'),
+                                          },
+                                        ]}
+                                        value={field.value || 'session'}
+                                        onValueChange={field.onChange}
+                                      >
+                                        <FormControl>
+                                          <SelectTrigger>
+                                            <SelectValue />
+                                          </SelectTrigger>
+                                        </FormControl>
+                                        <SelectContent
+                                          alignItemWithTrigger={false}
+                                        >
+                                          <SelectGroup>
+                                            <SelectItem value='off'>
+                                              {t('Off')}
+                                            </SelectItem>
+                                            <SelectItem value='device'>
+                                              {t('Device')}
+                                            </SelectItem>
+                                            <SelectItem value='session'>
+                                              {t('Session')}
+                                            </SelectItem>
+                                            <SelectItem value='full'>
+                                              {t('Full')}
+                                            </SelectItem>
+                                          </SelectGroup>
+                                        </SelectContent>
+                                      </Select>
+                                      <FormDescription>
+                                        {t(
+                                          'Controls how Codex OAuth device and session identifiers are rewritten before upstream requests.'
+                                        )}
+                                      </FormDescription>
+                                      <FormMessage />
+                                    </FormItem>
+                                  )}
+                                />
+
+                                {currentCodexFingerprintMode !== 'off' && (
+                                  <FormField
+                                    control={form.control}
+                                    name='codex_device_id'
+                                    render={({ field }) => (
+                                      <FormItem>
+                                        <FormLabel>
+                                          {t('Codex device ID')}
+                                        </FormLabel>
+                                        <FormControl>
+                                          <Input
+                                            placeholder={t(
+                                              'Leave empty to derive a stable device ID'
+                                            )}
+                                            {...field}
+                                          />
+                                        </FormControl>
+                                        <FormDescription>
+                                          {t(
+                                            'Optional upstream-visible Codex installation identifier for this channel.'
+                                          )}
+                                        </FormDescription>
+                                        <FormMessage />
+                                      </FormItem>
+                                    )}
+                                  />
+                                )}
+                              </>
+                            )}
 
                             <FormField
                               control={form.control}
