@@ -99,14 +99,14 @@ func TestDoRequestSendsBlankHeartbeatForImageStreamWhenGlobalPingDisabled(t *tes
 	oldEnabled := setting.PingIntervalEnabled
 	oldSeconds := setting.PingIntervalSeconds
 	setting.PingIntervalEnabled = false
-	setting.PingIntervalSeconds = 1
+	setting.PingIntervalSeconds = 60
 	t.Cleanup(func() {
 		setting.PingIntervalEnabled = oldEnabled
 		setting.PingIntervalSeconds = oldSeconds
 	})
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		time.Sleep(1200 * time.Millisecond)
+		time.Sleep(relaycommon.ImageStreamHeartbeatInterval + 300*time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "ok")
 	}))
