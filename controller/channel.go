@@ -453,6 +453,87 @@ func GetChannelKey(c *gin.Context) {
 	})
 }
 
+type normalizeCodexAuthJSONRequest struct {
+	Content string `json:"content"`
+}
+
+func NormalizeCodexAuthJSON(c *gin.Context) {
+	var req normalizeCodexAuthJSONRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, fmt.Errorf("参数错误: %v", err))
+		return
+	}
+
+	result, err := service.NormalizeCodexAuthJSON(req.Content)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	common.ApiSuccess(c, result)
+}
+
+type exportCodexAuthJSONRequest struct {
+	Format string `json:"format"`
+}
+
+func ExportCodexAuthJSON(c *gin.Context) {
+	channelId, err := strconv.Atoi(c.Param("id"))
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("渠道ID格式错误: %v", err))
+		return
+	}
+
+	var req exportCodexAuthJSONRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		common.ApiError(c, fmt.Errorf("参数错误: %v", err))
+		return
+	}
+
+	channel, err := model.GetChannelById(channelId, true)
+	if err != nil {
+		common.ApiError(c, fmt.Errorf("获取渠道信息失败: %v", err))
+		return
+	}
+	if channel == nil {
+		common.ApiError(c, fmt.Errorf("渠道不存在"))
+		return
+	}
+	if channel.Type != constant.ChannelTypeCodex {
+		common.ApiError(c, fmt.Errorf("channel type is not Codex"))
+		return
+	}
+
+	normalized, err := service.NormalizeCodexAuthJSON(channel.Key)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	exported, err := service.ExportCodexAuthJSON(service.CodexAuthJSONExportOptions{
+		Format:      strings.TrimSpace(req.Format),
+		ChannelID:   channel.Id,
+		ChannelName: channel.Name,
+		Key:         normalized.Key,
+		ProxyURL:    channel.GetSetting().Proxy,
+	})
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+
+	recordManageAudit(c, "channel.codex_auth_export", map[string]interface{}{
+		"id":     channelId,
+		"name":   channel.Name,
+		"format": strings.TrimSpace(req.Format),
+	})
+
+	common.ApiSuccess(c, gin.H{
+		"filename":     fmt.Sprintf("channel-%d-codex-auth.%s.json", channel.Id, strings.ToLower(strings.TrimSpace(req.Format))),
+		"content_type": "application/json",
+		"content":      exported,
+	})
+}
+
 // validateTwoFactorAuth 统一的2FA验证函数
 func validateTwoFactorAuth(twoFA *model.TwoFA, code string) bool {
 	// 尝试验证TOTP
@@ -522,16 +603,15 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 			if !strings.HasPrefix(trimmedKey, "{") {
 				return fmt.Errorf("Codex key must be a valid JSON object")
 			}
-			var keyMap map[string]any
-			if err := common.Unmarshal([]byte(trimmedKey), &keyMap); err != nil {
-				return fmt.Errorf("Codex key must be a valid JSON object")
+			normalized, err := service.NormalizeCodexAuthJSON(trimmedKey)
+			if err != nil {
+				return err
 			}
-			if v, ok := keyMap["access_token"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
-				return fmt.Errorf("Codex key JSON must include access_token")
+			encoded, err := common.Marshal(normalized.Key)
+			if err != nil {
+				return err
 			}
-			if v, ok := keyMap["account_id"]; !ok || v == nil || strings.TrimSpace(fmt.Sprintf("%v", v)) == "" {
-				return fmt.Errorf("Codex key JSON must include account_id")
-			}
+			channel.Key = string(encoded)
 		}
 	}
 

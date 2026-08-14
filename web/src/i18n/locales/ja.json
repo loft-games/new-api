@@ -5265,6 +5265,26 @@
     "Zero retention": "データ保持なし",
     "Zhipu": "Zhipu",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Import Codex Auth JSON": "Codex Auth JSON をインポート",
+    "Import auth JSON": "auth JSON をインポート",
+    "Paste a new-api, CLIProxyAPI, or sub2api Codex auth JSON file to convert it into the current channel key format.": "new-api、CLIProxyAPI、または sub2api の Codex auth JSON ファイルを貼り付け、現在のチャネル key 形式に変換します。",
+    "Paste Codex auth JSON here": "ここに Codex auth JSON を貼り付け",
+    "Paste auth JSON first": "先に auth JSON を貼り付けてください",
+    "Failed to parse auth JSON": "auth JSON の解析に失敗しました",
+    "Auth JSON parsed": "auth JSON を解析しました",
+    "Codex auth JSON imported": "Codex auth JSON をインポートしました",
+    "Detected format: {{format}}": "検出された形式: {{format}}",
+    "Suggested channel name: {{name}}": "推奨チャネル名: {{name}}",
+    "Suggested proxy URL: {{url}}": "推奨プロキシ URL: {{url}}",
+    "Parse": "解析",
+    "Export Codex Auth as new-api": "Codex Auth を new-api 形式でエクスポート",
+    "Export Codex Auth as CLIProxyAPI": "Codex Auth を CLIProxyAPI 形式でエクスポート",
+    "Export Codex Auth as sub2api": "Codex Auth を sub2api 形式でエクスポート",
+    "Failed to export auth JSON": "auth JSON のエクスポートに失敗しました",
+    "Verify to export Codex auth JSON": "Codex auth JSON をエクスポートするための確認",
+    "Use Passkey or 2FA to confirm your identity before exporting this channel credential.": "このチャネル認証情報をエクスポートする前に、Passkey または 2FA で本人確認してください。",
+    "refresh_token is empty; automatic credential refresh will be unavailable": "refresh_token が空です。認証情報の自動更新は利用できません",
+    "id_token is empty": "id_token が空です"
   }
 }
