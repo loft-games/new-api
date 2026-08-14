@@ -1,10 +1,12 @@
 package codex
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -110,7 +112,103 @@ func (a *Adaptor) ConvertOpenAIResponsesRequest(c *gin.Context, info *relaycommo
 }
 
 func (a *Adaptor) DoRequest(c *gin.Context, info *relaycommon.RelayInfo, requestBody io.Reader) (any, error) {
+	key := strings.TrimSpace(info.ApiKey)
+	oauthKey, err := ParseOAuthKey(key)
+	if err != nil {
+		return nil, err
+	}
+
+	clientHeaders := http.Header{}
+	if c != nil && c.Request != nil {
+		clientHeaders = c.Request.Header
+	}
+	generatedHeaders := http.Header{}
+	copyIdentityInputHeaders(generatedHeaders, clientHeaders)
+	result, err := postProcessRequestBody(info, oauthKey, clientHeaders, generatedHeaders, requestBody)
+	if err != nil {
+		return nil, err
+	}
+	if c != nil && result != nil && result.state.enabled {
+		c.Set(identityStateContextKey, result.state)
+	}
+	applyGeneratedHeaders(info, generatedHeaders)
+	if result != nil {
+		requestBody = result.body
+	}
 	return channel.DoApiRequest(a, c, info, requestBody)
+}
+
+func exposeResponseBody(c *gin.Context, resp *http.Response) *types.NewAPIError {
+	if resp == nil || resp.Body == nil {
+		return nil
+	}
+	value, ok := c.Get(identityStateContextKey)
+	if !ok {
+		return nil
+	}
+	state, ok := value.(identityState)
+	if !ok || !state.enabled {
+		return nil
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return types.NewOpenAIError(err, types.ErrorCodeReadResponseBodyFailed, http.StatusInternalServerError)
+	}
+	_ = resp.Body.Close()
+	rewritten := applyResponseExpose(body, state)
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	return nil
+}
+
+func exposeStreamData(c *gin.Context, data string) string {
+	value, ok := c.Get(identityStateContextKey)
+	if !ok {
+		return data
+	}
+	state, ok := value.(identityState)
+	if !ok || !state.enabled {
+		return data
+	}
+	return string(applyResponseExpose([]byte(data), state))
+}
+
+func applyGeneratedHeaders(info *relaycommon.RelayInfo, headers http.Header) {
+	if info == nil || len(headers) == 0 {
+		return
+	}
+	mergedOverride := make(map[string]interface{})
+	for name, values := range headers {
+		if len(values) > 0 && strings.TrimSpace(values[0]) != "" {
+			mergedOverride[strings.ToLower(strings.TrimSpace(name))] = values[0]
+		}
+	}
+	for name, value := range relaycommon.GetEffectiveHeaderOverride(info) {
+		mergedOverride[name] = value
+	}
+	info.RuntimeHeadersOverride = mergedOverride
+	info.UseRuntimeHeadersOverride = true
+}
+
+func copyIdentityInputHeaders(dst http.Header, src http.Header) {
+	if dst == nil || src == nil {
+		return
+	}
+	for _, name := range []string{
+		"x-codex-turn-metadata",
+		"x-codex-window-id",
+		"x-codex-installation-id",
+		"x-client-request-id",
+		"session-id",
+		"session_id",
+		"thread-id",
+		"conversation_id",
+	} {
+		if value := strings.TrimSpace(src.Get(name)); value != "" {
+			dst.Set(name, value)
+		}
+	}
 }
 
 func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (usage any, err *types.NewAPIError) {
@@ -119,10 +217,18 @@ func (a *Adaptor) DoResponse(c *gin.Context, resp *http.Response, info *relaycom
 		// Alpha search responses are handled by relay.AlphaSearchHelper.
 		return nil, types.NewError(errors.New("codex channel: alpha search response should be handled by AlphaSearchHelper"), types.ErrorCodeInvalidRequest)
 	case relayconstant.RelayModeResponsesCompact:
+		if apiErr := exposeResponseBody(c, resp); apiErr != nil {
+			return nil, apiErr
+		}
 		return openai.OaiResponsesCompactionHandler(c, resp)
 	case relayconstant.RelayModeResponses:
 		if info.IsStream {
-			return openai.OaiResponsesStreamHandler(c, info, resp)
+			return openai.OaiResponsesStreamHandlerWithDataMapper(c, info, resp, func(data string) string {
+				return exposeStreamData(c, data)
+			})
+		}
+		if apiErr := exposeResponseBody(c, resp); apiErr != nil {
+			return nil, apiErr
 		}
 		return openai.OaiResponsesHandler(c, info, resp)
 	default:
