@@ -104,6 +104,7 @@ func TestOpenaiImageStreamHandlerForwardsSSEAndUsage(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), `data: {"type":"image_generation.partial_image","b64_json":"partial"}`)
 	require.Contains(t, recorder.Body.String(), `data: {"usage":{"input_tokens":3,"output_tokens":4,"total_tokens":7,"input_tokens_details":{"image_tokens":2,"text_tokens":1}}}`)
 	require.Contains(t, recorder.Body.String(), `data: [DONE]`)
+	require.True(t, strings.HasSuffix(recorder.Body.String(), "data: [DONE]\n\n"))
 	require.Equal(t, "text/event-stream", recorder.Header().Get("Content-Type"))
 	require.Equal(t, 3.0, info.PriceData.OtherRatios()["n"], "streams without completed events keep the requested count")
 }
@@ -156,6 +157,34 @@ func TestOpenaiImageStreamHandlerUsesCompletedEventCount(t *testing.T) {
 	require.Nil(t, err)
 	require.Equal(t, 7, usage.TotalTokens)
 	require.Equal(t, 2.0, info.PriceData.OtherRatios()["n"])
+}
+
+func TestOpenaiImageStreamHandlerEmitsDoneOnCompletedEOF(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`event: image_generation.completed`,
+		`data: {"type":"image_generation.completed","b64_json":"final"}`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+	info.PriceData.UsePrice = true
+	info.PriceData.AddOtherRatio("n", 1)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	require.Contains(t, recorder.Body.String(), `event: image_generation.completed`)
+	require.Contains(t, recorder.Body.String(), `"b64_json":"final"`)
+	require.True(t, strings.HasSuffix(recorder.Body.String(), "data: [DONE]\n\n"))
 }
 
 // blockingBody serves one SSE chunk, then blocks until Close (the scanner's
@@ -494,4 +523,39 @@ func TestOpenaiImageStreamHandlerRecordsUpstreamErrorEvent(t *testing.T) {
 	// is still forwarded in the data: payload (stream ID 77).
 	require.Contains(t, recorder.Body.String(), `event: upstream_error`)
 	require.Contains(t, recorder.Body.String(), `stream ID 77`)
+}
+
+func TestOpenaiImageStreamHandlerIgnoresTailTransportErrorAfterCompletedImages(t *testing.T) {
+	oldMode := gin.Mode()
+	gin.SetMode(gin.TestMode)
+	t.Cleanup(func() { gin.SetMode(oldMode) })
+
+	oldTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 30
+	t.Cleanup(func() { constant.StreamingTimeout = oldTimeout })
+
+	body := strings.Join([]string{
+		`event: image_generation.completed`,
+		`data: {"type":"image_generation.completed","b64_json":"final"}`,
+		``,
+		`event: error`,
+		`data: {"type":"upstream_error","error":{"message":"stream error: stream ID 1; INTERNAL_ERROR; received from peer"}}`,
+		``,
+	}, "\n")
+
+	c, recorder, resp, info := newImageTestContext(t, body, "text/event-stream", true)
+	info.PriceData.UsePrice = true
+	info.PriceData.AddOtherRatio("n", 1)
+
+	usage, err := OpenaiImageStreamHandler(c, info, resp)
+	require.Nil(t, err)
+	require.NotNil(t, usage)
+	require.NotNil(t, info.StreamStatus)
+	require.Equal(t, relaycommon.StreamEndReasonEOF, info.StreamStatus.EndReason)
+	require.False(t, info.StreamStatus.HasErrors())
+	require.Contains(t, recorder.Body.String(), `event: image_generation.completed`)
+	require.Contains(t, recorder.Body.String(), `"b64_json":"final"`)
+	require.NotContains(t, recorder.Body.String(), `event: upstream_error`)
+	require.NotContains(t, recorder.Body.String(), `INTERNAL_ERROR`)
+	require.True(t, strings.HasSuffix(recorder.Body.String(), "data: [DONE]\n\n"))
 }

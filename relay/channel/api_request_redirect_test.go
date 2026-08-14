@@ -6,11 +6,15 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -85,4 +89,44 @@ func TestDoRequestReturnsUpstreamRedirectWithoutFollowing(t *testing.T) {
 	}
 
 	assert.Equal(t, originalRedirectPolicy, reflect.ValueOf(sharedClient.CheckRedirect).Pointer(), "the cached client must not be mutated")
+}
+
+func TestDoRequestSendsBlankHeartbeatForImageStreamWhenGlobalPingDisabled(t *testing.T) {
+	service.InitHttpClient()
+	gin.SetMode(gin.TestMode)
+
+	setting := operation_setting.GetGeneralSetting()
+	oldEnabled := setting.PingIntervalEnabled
+	oldSeconds := setting.PingIntervalSeconds
+	setting.PingIntervalEnabled = false
+	setting.PingIntervalSeconds = 60
+	t.Cleanup(func() {
+		setting.PingIntervalEnabled = oldEnabled
+		setting.PingIntervalSeconds = oldSeconds
+	})
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(relaycommon.ImageStreamHeartbeatInterval + 300*time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "ok")
+	}))
+	defer upstream.Close()
+
+	recorder := httptest.NewRecorder()
+	ctx, _ := gin.CreateTestContext(recorder)
+	ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	req, err := http.NewRequest(http.MethodPost, upstream.URL, strings.NewReader(""))
+	require.NoError(t, err)
+	info := &relaycommon.RelayInfo{
+		IsStream:    true,
+		RelayMode:   relayconstant.RelayModeImagesGenerations,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+
+	resp, err := doRequest(ctx, req, info)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	require.Equal(t, "\n", recorder.Body.String())
 }

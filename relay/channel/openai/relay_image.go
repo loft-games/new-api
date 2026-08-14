@@ -127,6 +127,10 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 		raw := common.StringToByteSlice(data)
+		if isOpenAIImageStreamErrorEvent(raw) && hasCompletedRequestedOpenAIImages(info, completedImages) {
+			logger.LogDebug(c, "ignored tail image stream transport error after completed images: %s", extractOpenAIImageStreamErrorMessage(raw))
+			return
+		}
 		lastStreamData = raw
 		receivedStreamData = true
 		if isOpenAIImageStreamErrorEvent(raw) {
@@ -160,8 +164,10 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 
 	// StreamScannerHandler consumes the upstream [DONE]; re-emit it so the
 	// client still receives a terminal data: [DONE].
-	if info.StreamStatus != nil && info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone {
-		helper.Done(c)
+	if shouldWriteOpenAIImageStreamDone(info, receivedStreamData, completedImages) {
+		if err := writeOpenaiImageStreamDone(c); err != nil {
+			info.StreamStatus.SetEndReason(relaycommon.StreamEndReasonClientGone, err)
+		}
 	}
 
 	applyUsagePostProcessing(info, usage, lastStreamData)
@@ -184,6 +190,33 @@ func OpenaiImageStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp 
 		}
 	}
 	return usage, nil
+}
+
+func requestedOpenAIImageCount(info *relaycommon.RelayInfo) int64 {
+	if info == nil {
+		return 1
+	}
+	if requested, ok := info.PriceData.OtherRatios()["n"]; ok && requested > 0 {
+		return int64(requested)
+	}
+	return 1
+}
+
+func hasCompletedRequestedOpenAIImages(info *relaycommon.RelayInfo, completedImages int64) bool {
+	return completedImages > 0 && completedImages >= requestedOpenAIImageCount(info)
+}
+
+func shouldWriteOpenAIImageStreamDone(info *relaycommon.RelayInfo, receivedStreamData bool, completedImages int64) bool {
+	if info == nil || info.StreamStatus == nil {
+		return false
+	}
+	if info.StreamStatus.EndReason == relaycommon.StreamEndReasonDone {
+		return true
+	}
+	return info.StreamStatus.EndReason == relaycommon.StreamEndReasonEOF &&
+		receivedStreamData &&
+		!info.StreamStatus.HasErrors() &&
+		hasCompletedRequestedOpenAIImages(info, completedImages)
 }
 
 type preservingReadCloser struct {
@@ -228,12 +261,16 @@ func startOpenAIImageStreamPeekPing(c *gin.Context, info *relaycommon.RelayInfo)
 		return nil, nil
 	}
 	generalSettings := operation_setting.GetGeneralSetting()
-	if !generalSettings.PingIntervalEnabled {
+	imageStreamRequiresHeartbeat := relaycommon.IsImageRelayMode(info.RelayMode)
+	if !generalSettings.PingIntervalEnabled && !imageStreamRequiresHeartbeat {
 		return nil, nil
 	}
 	helper.SetEventStreamHeaders(c)
 
 	pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second
+	if imageStreamRequiresHeartbeat {
+		pingInterval = relaycommon.ImageStreamHeartbeatInterval
+	}
 	if pingInterval <= 0 {
 		pingInterval = helper.DefaultPingInterval
 	}

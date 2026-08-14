@@ -15,6 +15,7 @@ import (
 
 	"github.com/QuantumNous/new-api/constant"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
+	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
@@ -331,9 +332,10 @@ func TestStreamScannerHandler_PingSentDuringSlowUpstream(t *testing.T) {
 	assert.Equal(t, int64(4), count.Load())
 
 	body := recorder.Body.String()
-	pingCount := strings.Count(body, ": PING")
-	assert.GreaterOrEqual(t, pingCount, 1,
-		"expected at least 1 ping during slow stream with 1s interval; got %d", pingCount)
+	assert.NotContains(t, body, ": PING")
+	heartbeatCount := strings.Count(body, "\n")
+	assert.GreaterOrEqual(t, heartbeatCount, 1,
+		"expected at least 1 blank heartbeat during slow stream with 1s interval; got %d", heartbeatCount)
 }
 
 func TestStreamScannerHandler_PingDisabledByRelayInfo(t *testing.T) {
@@ -375,8 +377,51 @@ func TestStreamScannerHandler_PingDisabledByRelayInfo(t *testing.T) {
 	assert.Equal(t, int64(5), count.Load())
 
 	body := recorder.Body.String()
-	pingCount := strings.Count(body, ": PING")
-	assert.Equal(t, 0, pingCount, "pings should be disabled when DisablePing=true")
+	assert.NotContains(t, body, ": PING")
+}
+
+func TestStreamScannerHandler_PingForcedForImageStreamWhenGlobalPingDisabled(t *testing.T) {
+	setting := operation_setting.GetGeneralSetting()
+	oldEnabled := setting.PingIntervalEnabled
+	oldSeconds := setting.PingIntervalSeconds
+	setting.PingIntervalEnabled = false
+	setting.PingIntervalSeconds = 60
+	t.Cleanup(func() {
+		setting.PingIntervalEnabled = oldEnabled
+		setting.PingIntervalSeconds = oldSeconds
+	})
+
+	pr, pw := io.Pipe()
+	go func() {
+		time.Sleep(relaycommon.ImageStreamHeartbeatInterval + 300*time.Millisecond)
+		_, _ = fmt.Fprint(pw, "data: [DONE]\n")
+		_ = pw.Close()
+	}()
+
+	recorder := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(recorder)
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/images/generations", nil)
+
+	resp := &http.Response{Body: pr}
+	info := &relaycommon.RelayInfo{
+		RelayMode:   relayconstant.RelayModeImagesGenerations,
+		ChannelMeta: &relaycommon.ChannelMeta{},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		StreamScannerHandler(c, resp, info, func(data string, sr *StreamResult) {})
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(relaycommon.ImageStreamHeartbeatInterval + 2*time.Second):
+		t.Fatal("timed out waiting for image stream to finish")
+	}
+
+	require.Equal(t, relaycommon.StreamEndReasonDone, info.StreamStatus.EndReason)
+	require.Equal(t, "\n", recorder.Body.String())
 }
 
 // ---------- StreamStatus integration ----------
