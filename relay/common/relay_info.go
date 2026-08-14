@@ -35,7 +35,14 @@ const (
 	LastMessageTypeText     = convmeta.LastMessageTypeText
 	LastMessageTypeTools    = convmeta.LastMessageTypeTools
 	LastMessageTypeThinking = convmeta.LastMessageTypeThinking
+
+	ImageStreamHeartbeatInterval = 5 * time.Second
 )
+
+func IsImageRelayMode(relayMode int) bool {
+	return relayMode == relayconstant.RelayModeImagesGenerations ||
+		relayMode == relayconstant.RelayModeImagesEdits
+}
 
 // ClaudeConvertInfo now lives with the converters (convmeta); the alias keeps
 // host code and adaptors compiling unchanged.
