@@ -275,6 +275,17 @@ func processHeaderOverride(info *common.RelayInfo, c *gin.Context) (map[string]s
 		if !ok {
 			return nil, types.NewError(nil, types.ErrorCodeChannelHeaderOverrideInvalid)
 		}
+		if info.UseRuntimeHeadersOverride && info.RuntimeLiteralHeaders[key] {
+			headerOverride[key] = str
+			continue
+		}
+		if !strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
+			var err error
+			str, err = common.ResolveRandomHeaderVariables(str)
+			if err != nil {
+				return nil, types.NewError(err, types.ErrorCodeChannelHeaderOverrideInvalid)
+			}
+		}
 		if !hasClientRequest && strings.HasPrefix(strings.TrimSpace(str), clientHeaderPlaceholderPrefix) {
 			continue
 		}

@@ -12,6 +12,46 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRandomHeaderOverrides(t *testing.T) {
+	const template = "{RANDOM:UUID}:{RANDOM:n0-9}"
+	const pattern = `^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9]$`
+	for _, clientValue := range []string{"", "client-window", template} {
+		t.Run(clientValue, func(t *testing.T) {
+			ctx, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ctx.Request = httptest.NewRequest(http.MethodPost, "/v1/responses", nil)
+			ctx.Request.Header.Set("X-Codex-Window-Id", clientValue)
+			info := &relaycommon.RelayInfo{
+				RequestHeaders: map[string]string{"X-Codex-Window-Id": clientValue},
+				ChannelMeta: &relaycommon.ChannelMeta{
+					HeadersOverride: map[string]any{"X-Direct": template, "X-Client": "{client_header:X-Codex-Window-Id}"},
+					ParamOverride: map[string]any{"operations": []any{
+						map[string]any{"mode": "pass_headers", "value": []any{"X-Codex-Window-Id"}},
+						map[string]any{"mode": "set_header", "path": "X-Codex-Window-Id", "value": template, "keep_origin": true},
+					}},
+				},
+			}
+			_, err := relaycommon.ApplyParamOverrideWithRelayInfo([]byte(`{}`), info)
+			require.NoError(t, err)
+			headers, err := processHeaderOverride(info, ctx)
+			require.NoError(t, err)
+			assert.Regexp(t, pattern, headers["x-direct"])
+			if clientValue == "" {
+				assert.Regexp(t, pattern, headers["x-codex-window-id"])
+				first := headers["x-codex-window-id"]
+				_, err = relaycommon.ApplyParamOverrideWithRelayInfo([]byte(`{}`), info)
+				require.NoError(t, err)
+				headers, err = processHeaderOverride(info, ctx)
+				require.NoError(t, err)
+				assert.Regexp(t, pattern, headers["x-codex-window-id"])
+				assert.NotEqual(t, first, headers["x-codex-window-id"])
+			} else {
+				assert.Equal(t, clientValue, headers["x-codex-window-id"])
+				assert.Equal(t, clientValue, headers["x-client"])
+			}
+		})
+	}
+}
+
 func TestNewTaskAPIRequestInheritsClientCancellation(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
