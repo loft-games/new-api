@@ -2871,7 +2871,10 @@ export function ChannelMutateDrawer({
                 <code className='bg-muted rounded px-1 py-0.5'>
                   {'{client_header:NAME}'}
                 </code>{' '}
-                — {t('Client header value')}
+                — {t('Client header value')},{' '}
+                <code className='bg-muted rounded px-1 py-0.5'>
+                  {'{RANDOM:UUID}:{RANDOM:n0-9}'}
+                </code>
               </FormDescription>
               <FormMessage />
             </FormItem>

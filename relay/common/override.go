@@ -1,9 +1,11 @@
 package common
 
 import (
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"maps"
+	"math/big"
 	"net/http"
 	"regexp"
 	"slices"
@@ -16,8 +18,43 @@ import (
 	"github.com/QuantumNous/new-api/common"
 	kitreasoning "github.com/QuantumNous/new-api/relaykit/relayconvert/reasoning"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/google/uuid"
 	"github.com/samber/lo"
 )
+
+// ResolveRandomHeaderVariables expands the supported administrator-supplied placeholders.
+func ResolveRandomHeaderVariables(template string) (string, error) {
+	var result strings.Builder
+	for len(template) > 0 {
+		i := strings.Index(template, "{RANDOM:")
+		if i < 0 {
+			result.WriteString(template)
+			break
+		}
+		result.WriteString(template[:i])
+		template = template[i:]
+		switch {
+		case strings.HasPrefix(template, "{RANDOM:UUID}"):
+			id, err := uuid.NewRandomFromReader(rand.Reader)
+			if err != nil {
+				return "", fmt.Errorf("generate random UUID: %w", err)
+			}
+			result.WriteString(id.String())
+			template = template[len("{RANDOM:UUID}"):]
+		case strings.HasPrefix(template, "{RANDOM:n0-9}"):
+			n, err := rand.Int(rand.Reader, big.NewInt(10))
+			if err != nil {
+				return "", fmt.Errorf("generate random digit: %w", err)
+			}
+			result.WriteByte(byte('0' + n.Int64()))
+			template = template[len("{RANDOM:n0-9}"):]
+		default:
+			result.WriteByte(template[0])
+			template = template[1:]
+		}
+	}
+	return result.String(), nil
+}
 
 var negativeIndexRegexp = regexp.MustCompile(`\.(-\d+)`)
 
@@ -207,6 +244,22 @@ func ApplyParamOverrideWithRelayInfo(jsonData []byte, info *RelayInfo) ([]byte, 
 	}
 
 	overrideCtx := BuildParamOverrideContext(info)
+	if info != nil {
+		headers := ensureMapKeyInContext(overrideCtx, paramOverrideContextHeaderOverride)
+		for key := range info.RuntimeLiteralHeaders {
+			ensureMapKeyInContext(overrideCtx, "__literal_headers")[key] = true
+		}
+		original := sanitizeHeaderOverrideMap(getHeaderOverrideMap(info))
+		for key, value := range info.RuntimeRandomHeaders {
+			if headers[key] == value {
+				if originalValue, ok := original[key]; ok {
+					headers[key] = originalValue
+				} else {
+					delete(headers, key)
+				}
+			}
+		}
+	}
 	var recorder *paramOverrideAuditRecorder
 	if shouldEnableParamOverrideAudit(paramOverride) {
 		recorder = &paramOverrideAuditRecorder{}
@@ -1032,7 +1085,28 @@ func applyOperations(doc *ojson.Doc, operations []ParamOperation, conditionConte
 				}
 			}
 		case "set_header":
-			err = setHeaderOverrideInContext(context, op.Path, op.Value, op.KeepOrigin)
+			value := op.Value
+			headers := ensureMapKeyInContext(context, paramOverrideContextHeaderOverride)
+			existing := strings.TrimSpace(fmt.Sprintf("%v", headers[normalizeHeaderContextKey(op.Path)]))
+			_, exists := headers[normalizeHeaderContextKey(op.Path)]
+			if template, ok := value.(string); ok && !(op.KeepOrigin && exists && existing != "") {
+				value, err = ResolveRandomHeaderVariables(template)
+				if err == nil && (strings.Contains(template, "{RANDOM:UUID}") || strings.Contains(template, "{RANDOM:n0-9}")) {
+					ensureMapKeyInContext(context, "__random_headers")[normalizeHeaderContextKey(op.Path)] = value
+				}
+			}
+			if err == nil {
+				err = setHeaderOverrideInContext(context, op.Path, value, op.KeepOrigin)
+				if !(op.KeepOrigin && exists && existing != "") {
+					key := normalizeHeaderContextKey(op.Path)
+					switch value.(type) {
+					case map[string]any, map[string]string:
+						ensureMapKeyInContext(context, "__literal_headers")[key] = true
+					default:
+						delete(ensureMapKeyInContext(context, "__literal_headers"), key)
+					}
+				}
+			}
 			if err == nil {
 				auditRecorder.recordOperation("set_header", op.Path, "", "", op.Value)
 				contextJSON, err = marshalContextJSON(context)
@@ -1382,7 +1456,21 @@ func copyHeaderInContext(context map[string]any, fromHeader, toHeader string, ke
 	if !exists {
 		return fmt.Errorf("%w: %s", errSourceHeaderNotFound, fromHeader)
 	}
-	return setHeaderOverrideInContext(context, toHeader, value, keepOrigin)
+	headers := ensureMapKeyInContext(context, paramOverrideContextHeaderOverride)
+	_, sourceIsOverride := headers[fromHeader]
+	_, sourceIsLiteral := ensureMapKeyInContext(context, "__literal_headers")[fromHeader]
+	if keepOrigin && strings.TrimSpace(fmt.Sprintf("%v", headers[toHeader])) != "" && headers[toHeader] != nil {
+		return nil
+	}
+	if err := setHeaderOverrideInContext(context, toHeader, value, false); err != nil {
+		return err
+	}
+	if !sourceIsOverride || sourceIsLiteral {
+		ensureMapKeyInContext(context, "__literal_headers")[toHeader] = true
+	} else {
+		delete(ensureMapKeyInContext(context, "__literal_headers"), toHeader)
+	}
+	return nil
 }
 
 func moveHeaderInContext(context map[string]any, fromHeader, toHeader string, keepOrigin bool) error {
@@ -1407,6 +1495,7 @@ func deleteHeaderOverrideInContext(context map[string]any, headerName string) er
 	}
 	rawHeaders := ensureMapKeyInContext(context, paramOverrideContextHeaderOverride)
 	delete(rawHeaders, headerName)
+	delete(ensureMapKeyInContext(context, "__literal_headers"), headerName)
 	return nil
 }
 
@@ -1571,7 +1660,11 @@ func writeSyncTargetValue(doc *ojson.Doc, context map[string]any, target syncTar
 		path := processNegativeIndex(doc, target.key)
 		return doc.Set(path, value)
 	case "header":
-		return setHeaderOverrideInContext(context, target.key, value, false)
+		if err := setHeaderOverrideInContext(context, target.key, value, false); err != nil {
+			return err
+		}
+		ensureMapKeyInContext(context, "__literal_headers")[normalizeHeaderContextKey(target.key)] = true
+		return nil
 	default:
 		return fmt.Errorf("unsupported sync_fields target kind: %s", target.kind)
 	}
@@ -1674,6 +1767,16 @@ func syncRuntimeHeaderOverrideFromContext(info *RelayInfo, context map[string]an
 		return
 	}
 	info.RuntimeHeadersOverride = sanitizeHeaderOverrideMap(rawMap)
+	info.RuntimeLiteralHeaders = make(map[string]bool)
+	for key := range ensureMapKeyInContext(context, "__literal_headers") {
+		info.RuntimeLiteralHeaders[key] = true
+	}
+	info.RuntimeRandomHeaders = make(map[string]string)
+	for key, value := range ensureMapKeyInContext(context, "__random_headers") {
+		if current, ok := rawMap[key]; ok && current == value {
+			info.RuntimeRandomHeaders[key] = fmt.Sprint(value)
+		}
+	}
 	info.UseRuntimeHeadersOverride = true
 }
 
