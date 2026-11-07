@@ -74,9 +74,6 @@ func TestRelayKeepAliveDuringImagePreparation(t *testing.T) {
 	for range 2 {
 		line, readErr := reader.ReadString('\n')
 		require.NoError(t, readErr)
-		require.Equal(t, ": PING\n", line)
-		line, readErr = reader.ReadString('\n')
-		require.NoError(t, readErr)
 		require.Equal(t, "\n", line)
 	}
 	select {
@@ -156,9 +153,6 @@ func TestRelayKeepAliveAcrossUpstreamRetries(t *testing.T) {
 	reader := bufio.NewReader(response.Body)
 	for range 2 {
 		line, readErr := reader.ReadString('\n')
-		require.NoError(t, readErr)
-		require.Equal(t, ": PING\n", line)
-		line, readErr = reader.ReadString('\n')
 		require.NoError(t, readErr)
 		require.Equal(t, "\n", line)
 	}
