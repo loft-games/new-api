@@ -367,6 +367,7 @@ func migrateDB() error {
 		&SubscriptionOrder{},
 		&UserSubscription{},
 		&SubscriptionPreConsumeRecord{},
+		&SubscriptionPlanQuotaRule{}, &UserSubscriptionQuotaRule{}, &SubscriptionQuotaPeriod{}, &SubscriptionQuotaAllocation{},
 		&CustomOAuthProvider{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
@@ -398,7 +399,7 @@ func migrateDB() error {
 			return err
 		}
 	}
-	return nil
+	return MigrateSubscriptionQuotaRules(DB)
 }
 
 func migrateLOGDB() error {

@@ -48,7 +48,6 @@ import {
   SheetDescription,
 } from '@/components/ui/sheet'
 import { Switch } from '@/components/ui/switch'
-import { formatQuota } from '@/lib/format'
 import { handleServerError } from '@/lib/handle-server-error'
 import { getServerMessage } from '@/lib/server-error-message'
 
@@ -62,6 +61,7 @@ import {
 } from '../../api'
 import { formatTimestamp } from '../../lib'
 import type { PlanRecord, UserSubscriptionRecord } from '../../types'
+import { SubscriptionQuotaUsage } from '../subscription-quota-rules'
 
 interface Props {
   open: boolean
@@ -337,11 +337,7 @@ export function UserSubscriptionsDialog(props: Props) {
                   header: t('Total Quota'),
                   cell: (record) => {
                     const sub = record.subscription
-                    const total = Number(sub.amount_total || 0)
-                    const used = Number(sub.amount_used || 0)
-                    return total > 0
-                      ? `${formatQuota(used)}/${formatQuota(total)}`
-                      : t('Unlimited')
+                    return <SubscriptionQuotaUsage rules={sub.quota_rules} />
                   },
                 },
                 {

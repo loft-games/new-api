@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -57,7 +58,7 @@ func TestMain(m *testing.M) {
 		&model.Channel{},
 		&model.Midjourney{},
 		&model.TopUp{},
-		&model.UserSubscription{},
+		&model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPlanQuotaRule{}, &model.UserSubscriptionQuotaRule{}, &model.SubscriptionQuotaPeriod{}, &model.SubscriptionQuotaAllocation{}, &model.SubscriptionPreConsumeRecord{},
 		&model.SystemTask{},
 		&model.SystemTaskLock{},
 	); err != nil {
@@ -82,6 +83,12 @@ func truncate(t *testing.T) {
 		model.DB.Exec("DELETE FROM midjourneys")
 		model.DB.Exec("DELETE FROM top_ups")
 		model.DB.Exec("DELETE FROM user_subscriptions")
+		model.DB.Exec("DELETE FROM subscription_plans")
+		model.DB.Exec("DELETE FROM subscription_plan_quota_rules")
+		model.DB.Exec("DELETE FROM user_subscription_quota_rules")
+		model.DB.Exec("DELETE FROM subscription_quota_periods")
+		model.DB.Exec("DELETE FROM subscription_quota_allocations")
+		model.DB.Exec("DELETE FROM subscription_pre_consume_records")
 		model.DB.Exec("DELETE FROM system_task_locks")
 		model.DB.Exec("DELETE FROM system_tasks")
 	})
@@ -118,7 +125,13 @@ func seedSubscription(t *testing.T, id int, userId int, amountTotal int64, amoun
 		StartTime:   time.Now().Unix(),
 		EndTime:     time.Now().Add(30 * 24 * time.Hour).Unix(),
 	}
+	plan := &model.SubscriptionPlan{Id: id, Title: "test", TotalAmount: amountTotal}
+	require.NoError(t, model.DB.Create(plan).Error)
+	sub.PlanId = id
+	sub.AmountUsed = 0
 	require.NoError(t, model.DB.Create(sub).Error)
+	_, err := model.PreConsumeUserSubscription(fmt.Sprintf("subscription-test-%d", id), userId, "test", 0, amountUsed)
+	require.NoError(t, err)
 }
 
 func seedChannel(t *testing.T, id int) {
@@ -156,9 +169,10 @@ func makeTask(userId, channelId, quota, tokenId int, billingSource string, subsc
 			OriginModelName: "test-model",
 		},
 		PrivateData: model.TaskPrivateData{
-			BillingSource:  billingSource,
-			SubscriptionId: subscriptionId,
-			TokenId:        tokenId,
+			BillingSource:         billingSource,
+			SubscriptionId:        subscriptionId,
+			SubscriptionRequestId: fmt.Sprintf("subscription-test-%d", subscriptionId),
+			TokenId:               tokenId,
 			BillingContext: &model.TaskBillingContext{
 				ModelPrice:      0.02,
 				GroupRatio:      1.0,
@@ -555,8 +569,10 @@ func getTokenUsedQuota(t *testing.T, id int) int {
 func getSubscriptionUsed(t *testing.T, id int) int64 {
 	t.Helper()
 	var sub model.UserSubscription
-	require.NoError(t, model.DB.Select("amount_used").Where("id = ?", id).First(&sub).Error)
-	return sub.AmountUsed
+	require.NoError(t, model.DB.First(&sub, id).Error)
+	subs := []model.UserSubscription{sub}
+	require.NoError(t, model.LoadUserSubscriptionQuotaRules(model.DB, subs))
+	return subs[0].QuotaRules[0].AmountUsed
 }
 
 func getTaskQuota(t *testing.T, id int64) int {
@@ -1809,4 +1825,50 @@ func TestSettle_TokenRecalcFallsBackToCompletionTokens(t *testing.T) {
 			assert.Equal(t, testCase.wantQuota, task.Quota)
 		})
 	}
+}
+
+func TestTaskBillingSubscriptionRulesRemainInOriginalPeriods(t *testing.T) {
+	truncate(t)
+	const userID, tokenID, channelID, subID = 901, 901, 901, 901
+	seedUser(t, userID, 1000)
+	seedToken(t, tokenID, userID, "sk-period-task", 970)
+	seedChannel(t, channelID)
+	plan := &model.SubscriptionPlan{Id: subID, Title: "task limits", QuotaRules: []model.SubscriptionPlanQuotaRule{
+		{SubscriptionQuotaSpec: model.SubscriptionQuotaSpec{TotalAmount: 100, QuotaResetPeriod: model.SubscriptionResetCustom, QuotaResetCustomSeconds: 18000}},
+		{SubscriptionQuotaSpec: model.SubscriptionQuotaSpec{TotalAmount: 150, QuotaResetPeriod: model.SubscriptionResetWeekly}},
+	}}
+	require.NoError(t, model.DB.Create(plan).Error)
+	sub := &model.UserSubscription{Id: subID, UserId: userID, PlanId: plan.Id, Status: "active", StartTime: time.Now().Unix(), EndTime: time.Now().AddDate(0, 1, 0).Unix()}
+	require.NoError(t, model.DB.Create(sub).Error)
+	requestID := fmt.Sprintf("subscription-test-%d", subID)
+	_, err := model.PreConsumeUserSubscription(requestID, userID, "test", 0, 30)
+	require.NoError(t, err)
+	seedChargedAccounting(t, userID, channelID, tokenID, 30, 1)
+	task := makeTask(userID, channelID, 30, tokenID, BillingSourceSubscription, subID)
+	require.NoError(t, model.DB.Create(task).Error)
+	require.NoError(t, model.DB.First(task, task.ID).Error)
+	assert.Equal(t, requestID, task.PrivateData.SubscriptionRequestId)
+	_, err = model.AdminResetUserSubscriptionsByPlan(userID, plan.Id, false)
+	require.NoError(t, err)
+	_, err = model.PreConsumeUserSubscription("task-new-period", userID, "test", 0, 25)
+	require.NoError(t, err)
+	RecalculateTaskQuota(context.Background(), task, 60, common.NewMessage("task settled"))
+	assert.Equal(t, 60, task.Quota)
+	assert.Equal(t, 940, getTokenRemainQuota(t, tokenID))
+	require.True(t, RefundTaskQuota(context.Background(), task, "task failed"))
+	require.True(t, RefundTaskQuota(context.Background(), task, "retry"))
+	snapshots := []model.UserSubscription{*sub}
+	require.NoError(t, model.LoadUserSubscriptionQuotaRules(model.DB, snapshots))
+	for _, rule := range snapshots[0].QuotaRules {
+		assert.EqualValues(t, 25, rule.AmountUsed)
+	}
+	usage, err := model.GetSubscriptionRequestQuotaUsage(requestID)
+	require.NoError(t, err)
+	require.Len(t, usage, 2)
+	for _, rule := range usage {
+		assert.Zero(t, rule.AmountUsed)
+		assert.Zero(t, rule.Consumed)
+	}
+	assert.Equal(t, 1000, getTokenRemainQuota(t, tokenID))
+	assert.Equal(t, 1000, getUserQuota(t, userID))
 }

@@ -444,7 +444,7 @@ func postConsumeQuotaWithResult(relayInfo *relaycommon.RelayInfo, quota int, pre
 		}
 		delta := int64(quota)
 		if delta != 0 {
-			if err := model.PostConsumeUserSubscriptionDelta(relayInfo.SubscriptionId, delta); err != nil {
+			if err := model.AdjustSubscriptionRequestQuota(relayInfo.RequestId, relayInfo.SubscriptionId, delta, false); err != nil {
 				return result, err
 			}
 			relayInfo.SubscriptionPostDelta += delta
@@ -507,15 +507,30 @@ func checkAndSendSubscriptionQuotaNotify(relayInfo *relaycommon.RelayInfo) {
 		if relayInfo == nil {
 			return
 		}
-		if relayInfo.SubscriptionId == 0 || relayInfo.SubscriptionAmountTotal <= 0 {
+		if relayInfo.SubscriptionId == 0 {
 			return
 		}
-
+		usage, err := model.GetSubscriptionRequestQuotaUsage(relayInfo.RequestId)
+		if err != nil {
+			common.SysError(common.LogText("subscription quota notification lookup failed: %s", err.Error()))
+			return
+		}
 		userSetting := relayInfo.UserSetting
-		usedBefore := relayInfo.SubscriptionAmountUsedAfterPreConsume - relayInfo.SubscriptionPreConsumed
-		usedAfter := relayInfo.SubscriptionAmountUsedAfterPreConsume + relayInfo.SubscriptionPostDelta
-		remaining := relayInfo.SubscriptionAmountTotal - usedAfter
-		if !quotaReminderDue(userSetting, relayInfo.SubscriptionAmountTotal-usedBefore, remaining) {
+		remaining := int64(0)
+		due := false
+		for _, rule := range usage {
+			if rule.TotalAmount <= 0 {
+				continue
+			}
+			after := rule.TotalAmount - rule.AmountUsed
+			if quotaReminderDue(userSetting, after+rule.Consumed, after) {
+				if !due || after < remaining {
+					remaining = after
+				}
+				due = true
+			}
+		}
+		if !due {
 			return
 		}
 

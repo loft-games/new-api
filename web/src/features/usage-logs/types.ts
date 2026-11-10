@@ -278,6 +278,15 @@ export interface LogOtherData {
   subscription_consumed?: number
   subscription_remain?: number
   subscription_total?: number
+  subscription_quota_rules?: {
+    rule_id: number
+    total_amount: number
+    amount_used: number
+    consumed: number
+    quota_reset_period: 'never' | 'daily' | 'weekly' | 'monthly' | 'custom'
+    quota_reset_custom_seconds: number
+    next_reset_time: number
+  }[]
 }
 
 /**

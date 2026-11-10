@@ -115,7 +115,7 @@ func taskIsSubscription(task *model.Task) bool {
 // taskAdjustFunding 调整任务的资金来源（钱包或订阅），delta > 0 表示扣费，delta < 0 表示退还。
 func taskAdjustFunding(task *model.Task, delta int) error {
 	if taskIsSubscription(task) {
-		return model.PostConsumeUserSubscriptionDelta(task.PrivateData.SubscriptionId, int64(delta))
+		return model.AdjustSubscriptionRequestQuota(task.PrivateData.SubscriptionRequestId, task.PrivateData.SubscriptionId, int64(delta), false)
 	}
 	if delta > 0 {
 		return model.DecreaseUserQuota(task.UserId, delta, false)
@@ -215,6 +215,15 @@ func taskDeliveredInline(c *gin.Context, task *model.Task) bool {
 func appendTaskLogInfo(task *model.Task, other *model.LogOther) {
 	if task == nil || other == nil {
 		return
+	}
+	if taskIsSubscription(task) && task.PrivateData.SubscriptionRequestId != "" {
+		other.SetPublic("billing_source", BillingSourceSubscription)
+		other.SetPublic("subscription_id", task.PrivateData.SubscriptionId)
+		if rules, err := model.GetSubscriptionRequestQuotaUsage(task.PrivateData.SubscriptionRequestId); err == nil {
+			other.SetPublic("subscription_quota_rules", rules)
+		} else {
+			common.SysError(common.LogText("subscription task quota log lookup failed: %s", err.Error()))
+		}
 	}
 	if task.TaskID != "" {
 		other.SetPublic("task_id", task.TaskID)
