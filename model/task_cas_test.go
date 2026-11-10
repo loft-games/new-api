@@ -53,7 +53,7 @@ func TestMain(m *testing.M) {
 		&TopUp{},
 		&SubscriptionPlan{},
 		&SubscriptionOrder{},
-		&UserSubscription{},
+		&UserSubscription{}, &SubscriptionPlanQuotaRule{}, &UserSubscriptionQuotaRule{}, &SubscriptionQuotaPeriod{}, &SubscriptionQuotaAllocation{}, &SubscriptionPreConsumeRecord{},
 		&UserOAuthBinding{},
 		&PerfMetric{},
 		&SystemInstance{},
@@ -89,6 +89,12 @@ func truncateTables(t *testing.T) {
 		DB.Exec("DELETE FROM subscription_orders")
 		DB.Exec("DELETE FROM subscription_plans")
 		DB.Exec("DELETE FROM user_subscriptions")
+		DB.Exec("DELETE FROM subscription_plan_quota_rules")
+		DB.Exec("DELETE FROM user_subscription_quota_rules")
+		DB.Exec("DELETE FROM subscription_quota_periods")
+		DB.Exec("DELETE FROM subscription_quota_allocations")
+		DB.Exec("DELETE FROM subscription_pre_consume_records")
+		InvalidateSubscriptionPlanCache(1)
 		DB.Exec("DELETE FROM perf_metrics")
 		DB.Exec("DELETE FROM system_instances")
 		DB.Exec("DELETE FROM system_task_locks")
