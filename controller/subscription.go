@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
@@ -39,6 +40,10 @@ func GetSubscriptionPlans(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	if err := model.LoadSubscriptionPlanQuotaRules(model.DB, plans); err != nil {
+		common.ApiError(c, err)
+		return
+	}
 	result := make([]SubscriptionPlanDTO, 0, len(plans))
 	for _, p := range plans {
 		p.NormalizeDefaults()
@@ -57,13 +62,15 @@ func GetSubscriptionSelf(c *gin.Context) {
 	// Get all subscriptions (including expired)
 	allSubscriptions, err := model.GetAllUserSubscriptions(userId)
 	if err != nil {
-		allSubscriptions = []model.SubscriptionSummary{}
+		common.ApiError(c, err)
+		return
 	}
 
 	// Get active subscriptions for backward compatibility
 	activeSubscriptions, err := model.GetAllActiveUserSubscriptions(userId)
 	if err != nil {
-		activeSubscriptions = []model.SubscriptionSummary{}
+		common.ApiError(c, err)
+		return
 	}
 
 	common.ApiSuccess(c, gin.H{
@@ -120,6 +127,10 @@ func SubscriptionRequestBalancePay(c *gin.Context) {
 func AdminListSubscriptionPlans(c *gin.Context) {
 	var plans []model.SubscriptionPlan
 	if err := model.DB.Order("sort_order desc, id desc").Find(&plans).Error; err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if err := model.LoadSubscriptionPlanQuotaRules(model.DB, plans); err != nil {
 		common.ApiError(c, err)
 		return
 	}
@@ -180,6 +191,15 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorT(c, "Purchase limit cannot be negative")
 		return
 	}
+	if req.Plan.QuotaRules != nil {
+		if err := model.ValidateSubscriptionQuotaRules(req.Plan.QuotaRules); err != nil {
+			common.ApiErrorT(c, err.Error())
+			return
+		}
+		req.Plan.TotalAmount = req.Plan.QuotaRules[0].TotalAmount
+		req.Plan.QuotaResetPeriod = req.Plan.QuotaRules[0].QuotaResetPeriod
+		req.Plan.QuotaResetCustomSeconds = req.Plan.QuotaRules[0].QuotaResetCustomSeconds
+	}
 	if req.Plan.TotalAmount < 0 {
 		common.ApiErrorT(c, "Total quota cannot be negative")
 		return
@@ -197,6 +217,10 @@ func AdminCreateSubscriptionPlan(c *gin.Context) {
 			common.ApiErrorT(c, "Downgrade group does not exist")
 			return
 		}
+	}
+	if req.Plan.QuotaResetPeriod != "" && req.Plan.QuotaResetPeriod != model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod) {
+		common.ApiErrorT(c, "Invalid quota reset period")
+		return
 	}
 	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
 	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
@@ -254,6 +278,15 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 		common.ApiErrorT(c, "Purchase limit cannot be negative")
 		return
 	}
+	if req.Plan.QuotaRules != nil {
+		if err := model.ValidateSubscriptionQuotaRules(req.Plan.QuotaRules); err != nil {
+			common.ApiErrorT(c, err.Error())
+			return
+		}
+		req.Plan.TotalAmount = req.Plan.QuotaRules[0].TotalAmount
+		req.Plan.QuotaResetPeriod = req.Plan.QuotaRules[0].QuotaResetPeriod
+		req.Plan.QuotaResetCustomSeconds = req.Plan.QuotaRules[0].QuotaResetCustomSeconds
+	}
 	if req.Plan.TotalAmount < 0 {
 		common.ApiErrorT(c, "Total quota cannot be negative")
 		return
@@ -272,6 +305,10 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 			return
 		}
 	}
+	if req.Plan.QuotaResetPeriod != "" && req.Plan.QuotaResetPeriod != model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod) {
+		common.ApiErrorT(c, "Invalid quota reset period")
+		return
+	}
 	req.Plan.QuotaResetPeriod = model.NormalizeResetPeriod(req.Plan.QuotaResetPeriod)
 	if req.Plan.QuotaResetPeriod == model.SubscriptionResetCustom && req.Plan.QuotaResetCustomSeconds <= 0 {
 		common.ApiErrorT(c, "Custom reset cycle must be greater than 0 seconds")
@@ -279,6 +316,23 @@ func AdminUpdateSubscriptionPlan(c *gin.Context) {
 	}
 
 	err := model.DB.Transaction(func(tx *gorm.DB) error {
+		var existing model.SubscriptionPlan
+		if err := model.LockSubscriptionPlanTx(tx, id, &existing); err != nil {
+			return err
+		}
+		plans := []model.SubscriptionPlan{existing}
+		if err := model.LoadSubscriptionPlanQuotaRules(tx, plans); err != nil {
+			return err
+		}
+		if req.Plan.QuotaRules == nil {
+			if len(plans[0].QuotaRules) > 1 {
+				return errors.New("Use quota rules to update a multi-rule plan")
+			}
+			req.Plan.QuotaRules = []model.SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: model.SubscriptionQuotaSpec{TotalAmount: req.Plan.TotalAmount, QuotaResetPeriod: req.Plan.QuotaResetPeriod, QuotaResetCustomSeconds: req.Plan.QuotaResetCustomSeconds}}}
+		}
+		if err := model.ReplaceSubscriptionPlanQuotaRulesTx(tx, &req.Plan, req.Plan.QuotaRules); err != nil {
+			return err
+		}
 		// update plan (allow zero values updates with map)
 		updateMap := map[string]any{
 			"title":                      req.Plan.Title,

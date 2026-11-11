@@ -228,6 +228,11 @@ func appendBillingInfo(relayInfo *relaycommon.RelayInfo, other *model.LogOther) 
 		if consumed > 0 {
 			other.SetPublic("subscription_consumed", consumed)
 		}
+		if rules, err := model.GetSubscriptionRequestQuotaUsage(relayInfo.RequestId); err == nil {
+			other.SetPublic("subscription_quota_rules", rules)
+		} else {
+			common.SysError(common.LogText("subscription quota log lookup failed: %s", err.Error()))
+		}
 		// Wallet quota is not deducted when billed from subscription.
 		other.SetPublic("wallet_quota_deducted", 0)
 	}

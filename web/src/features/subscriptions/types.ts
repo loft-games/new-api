@@ -22,8 +22,26 @@ import { z } from 'zod'
 // Subscription Plan Schema & Types
 // ============================================================================
 
+export const subscriptionQuotaRuleSchema = z.object({
+  id: z.number().optional(),
+  total_amount: z.number(),
+  quota_reset_period: z.enum(['never', 'daily', 'weekly', 'monthly', 'custom']),
+  quota_reset_custom_seconds: z.number(),
+})
+export type SubscriptionQuotaRule = z.infer<typeof subscriptionQuotaRuleSchema>
+export const userSubscriptionQuotaRuleSchema =
+  subscriptionQuotaRuleSchema.extend({
+    amount_used: z.number(),
+    last_reset_time: z.number(),
+    next_reset_time: z.number(),
+  })
+export type UserSubscriptionQuotaRule = z.infer<
+  typeof userSubscriptionQuotaRuleSchema
+>
+
 export const subscriptionPlanSchema = z.object({
   id: z.number(),
+  quota_rules: z.array(subscriptionQuotaRuleSchema).min(1),
   title: z.string(),
   subtitle: z.string().optional(),
   price_amount: z.number(),
@@ -57,6 +75,7 @@ export interface PlanRecord {
 // ============================================================================
 
 export const userSubscriptionSchema = z.object({
+  quota_rules: z.array(userSubscriptionQuotaRuleSchema).min(1),
   id: z.number(),
   user_id: z.number(),
   plan_id: z.number(),
