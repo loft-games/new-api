@@ -1307,6 +1307,37 @@ func (r *SubscriptionPreConsumeRecord) BeforeUpdate(tx *gorm.DB) error {
 	return nil
 }
 
+func subscriptionPreConsumeResultTx(tx *gorm.DB, record SubscriptionPreConsumeRecord, userId int) (*SubscriptionPreConsumeResult, error) {
+	if record.UserId != userId {
+		return nil, errors.New("subscription request owner mismatch")
+	}
+	// Match settlement/refund lock ordering, and only lock a request that exists.
+	var sub UserSubscription
+	if err := lockForUpdate(tx).First(&sub, record.UserSubscriptionId).Error; err != nil {
+		return nil, err
+	}
+	if err := lockForUpdate(tx).First(&record, record.Id).Error; err != nil {
+		return nil, err
+	}
+	if record.Status == "refunded" {
+		return nil, errors.New("subscription pre-consume already refunded")
+	}
+	usage, err := subscriptionRequestQuotaUsageTx(lockForUpdate(tx), record.RequestId)
+	if err != nil {
+		return nil, err
+	}
+	result := &SubscriptionPreConsumeResult{
+		UserSubscriptionId: record.UserSubscriptionId,
+		PreConsumed:        record.PreConsumed,
+	}
+	if len(usage) == 1 {
+		result.AmountTotal = usage[0].TotalAmount
+		result.AmountUsedBefore = usage[0].AmountUsed
+		result.AmountUsedAfter = usage[0].AmountUsed
+	}
+	return result, nil
+}
+
 // PreConsumeUserSubscription pre-consumes from any active subscription total quota.
 func PreConsumeUserSubscription(requestId string, userId int, modelName string, quotaType int, amount int64) (*SubscriptionPreConsumeResult, error) {
 	if userId <= 0 {
@@ -1320,40 +1351,19 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 	}
 	now := GetDBTimestamp()
 
+	// Keep this lookup outside the transaction: under REPEATABLE READ an early
+	// snapshot would hide a request committed while waiting for its subscription.
+	var existing SubscriptionPreConsumeRecord
+	if err := DB.Where("request_id = ?", requestId).Limit(1).Find(&existing).Error; err != nil {
+		return nil, err
+	}
 	returnValue := &SubscriptionPreConsumeResult{}
-
+	requestConflict := false
 	err := DB.Transaction(func(tx *gorm.DB) error {
-		var existing SubscriptionPreConsumeRecord
-		query := tx.Where("request_id = ?", requestId).Limit(1).Find(&existing)
-		if query.Error != nil {
-			return query.Error
-		}
-		if query.RowsAffected > 0 {
-			var sub UserSubscription
-			if err := lockForUpdate(tx).First(&sub, existing.UserSubscriptionId).Error; err != nil {
-				return err
-			}
-			if err := lockForUpdate(tx).First(&existing, existing.Id).Error; err != nil {
-				return err
-			}
-			if existing.Status == "refunded" {
-				return errors.New("subscription pre-consume already refunded")
-			}
-			usage, err := subscriptionRequestQuotaUsageTx(lockForUpdate(tx), requestId)
-			if err != nil {
-				return err
-			}
-			returnValue.UserSubscriptionId = existing.UserSubscriptionId
-			if existing.UserId != userId {
-				return errors.New("subscription request owner mismatch")
-			}
-			returnValue.PreConsumed = existing.PreConsumed
-			if len(usage) == 1 {
-				returnValue.AmountTotal = usage[0].TotalAmount
-				returnValue.AmountUsedBefore = usage[0].AmountUsed
-				returnValue.AmountUsedAfter = usage[0].AmountUsed
-			}
-			return nil
+		if existing.Id != 0 {
+			var err error
+			returnValue, err = subscriptionPreConsumeResultTx(tx, existing, userId)
+			return err
 		}
 
 		var subs []UserSubscription
@@ -1363,32 +1373,19 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 			Find(&subs).Error; err != nil {
 			return fmt.Errorf("query active subscriptions: %w", err)
 		}
-		if len(subs) == 0 {
-			return errors.New("no active subscription")
-		}
+		// This is the first consistent read after acquiring subscription locks.
+		// A missing request must not acquire an InnoDB gap lock before INSERT.
 		var raced SubscriptionPreConsumeRecord
-		if err := lockForUpdate(tx).Where("request_id = ?", requestId).Find(&raced).Error; err != nil {
+		if err := tx.Where("request_id = ?", requestId).Find(&raced).Error; err != nil {
 			return err
 		}
 		if raced.Id != 0 {
-			if raced.Status == "refunded" {
-				return errors.New("subscription pre-consume already refunded")
-			}
-			returnValue.UserSubscriptionId = raced.UserSubscriptionId
-			if raced.UserId != userId {
-				return errors.New("subscription request owner mismatch")
-			}
-			returnValue.PreConsumed = raced.PreConsumed
-			usage, err := subscriptionRequestQuotaUsageTx(lockForUpdate(tx), requestId)
-			if err != nil {
-				return err
-			}
-			if len(usage) == 1 {
-				returnValue.AmountTotal = usage[0].TotalAmount
-				returnValue.AmountUsedBefore = usage[0].AmountUsed
-				returnValue.AmountUsedAfter = usage[0].AmountUsed
-			}
-			return nil
+			var err error
+			returnValue, err = subscriptionPreConsumeResultTx(tx, raced, userId)
+			return err
+		}
+		if len(subs) == 0 {
+			return errors.New("no active subscription")
 		}
 		var insufficient error
 		for _, candidate := range subs {
@@ -1423,6 +1420,11 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 				Status:             "consumed",
 			}
 			if err := tx.Create(record).Error; err != nil {
+				translated := err
+				if translator, ok := tx.Dialector.(gorm.ErrorTranslator); ok {
+					translated = translator.Translate(err)
+				}
+				requestConflict = errors.Is(translated, gorm.ErrDuplicatedKey)
 				return err
 			}
 			for _, r := range sub.QuotaRules {
@@ -1447,6 +1449,25 @@ func PreConsumeUserSubscription(requestId string, userId int, modelName string, 
 		}
 		return fmt.Errorf("subscription quota insufficient, need=%d", amount)
 	})
+	if err != nil && requestConflict {
+		// The unique request ID arbitrates races not covered by subscription locks.
+		// Roll back all quota changes before reading the winner in a fresh transaction
+		// (PostgreSQL also aborts a transaction after a unique constraint violation).
+		insertErr := err
+		err = DB.Transaction(func(tx *gorm.DB) error {
+			var record SubscriptionPreConsumeRecord
+			query := tx.Where("request_id = ?", requestId).Limit(1).Find(&record)
+			if query.Error != nil {
+				return query.Error
+			}
+			if query.RowsAffected == 0 {
+				return insertErr
+			}
+			var err error
+			returnValue, err = subscriptionPreConsumeResultTx(tx, record, userId)
+			return err
+		})
+	}
 	if err != nil {
 		return nil, err
 	}

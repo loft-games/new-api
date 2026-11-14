@@ -1,15 +1,26 @@
 package model
 
 import (
+	"errors"
+	"fmt"
 	"math"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
+
+var subscriptionPreConsumeTestUserID atomic.Int64
 
 func seedSubscriptionResetPlan(t *testing.T, plan *SubscriptionPlan) {
 	t.Helper()
@@ -383,4 +394,276 @@ func TestSubscriptionQuotaRulesSkipIdleCyclesAndKeepOriginalAnchor(t *testing.T)
 	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", sub.Id).Update("end_time", GetDBTimestamp()-1).Error)
 	_, err = PreConsumeUserSubscription("expired", 801, "model", 0, 1)
 	require.ErrorContains(t, err, "no active subscription")
+}
+
+func openSubscriptionPreConsumeTestDB(t *testing.T, dialect string) {
+	t.Helper()
+	var dialector gorm.Dialector
+	switch dialect {
+	case "sqlite":
+		dialector = sqlite.Open(":memory:")
+	case "mysql":
+		dsn := os.Getenv("TEST_MYSQL_DSN")
+		if dsn == "" {
+			t.Skip("TEST_MYSQL_DSN is not configured")
+		}
+		dialector = mysql.Open(dsn)
+	case "postgres":
+		dsn := os.Getenv("TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is not configured")
+		}
+		dialector = postgres.Open(dsn)
+	default:
+		t.Fatalf("unknown dialect %q", dialect)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(8)
+	previousDB, previousLogDB := DB, LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	DB, LOG_DB = db, db
+	databaseType := common.DatabaseType(dialect)
+	common.SetDatabaseTypes(databaseType, databaseType)
+	initCol()
+	t.Cleanup(func() {
+		DB, LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		initCol()
+		assert.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPlanQuotaRule{}, &UserSubscriptionQuotaRule{}, &SubscriptionQuotaPeriod{}, &SubscriptionQuotaAllocation{}, &SubscriptionPreConsumeRecord{}))
+	versionQuery := "SELECT VERSION()"
+	if dialect == "sqlite" {
+		versionQuery = "SELECT sqlite_version()"
+	} else if dialect == "postgres" {
+		versionQuery = "SELECT version()"
+	}
+	var version string
+	require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+	t.Logf("database version: %s", version)
+}
+
+func newPreConsumeTestSubscription(t *testing.T, userID int, quota int64) *UserSubscription {
+	t.Helper()
+	plan := &SubscriptionPlan{Title: t.Name(), DurationUnit: SubscriptionDurationMonth, DurationValue: 1, QuotaRules: []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{TotalAmount: quota, QuotaResetPeriod: SubscriptionResetNever}}}}
+	require.NoError(t, DB.Create(plan).Error)
+	var sub *UserSubscription
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		sub, err = CreateUserSubscriptionFromPlanTx(tx, userID, plan, "test")
+		return err
+	}))
+	return sub
+}
+
+func nextPreConsumeTestUserID() int {
+	return int(time.Now().Unix()%1_000_000_000)*1000 + int(subscriptionPreConsumeTestUserID.Add(1))%1000
+}
+
+func preConsumeTestRequestID(prefix string, userID int) string {
+	return fmt.Sprintf("%s-%d", prefix, userID)
+}
+
+func TestPreConsumeSubscriptionBehaviorAcrossDatabases(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			openSubscriptionPreConsumeTestDB(t, dialect)
+
+			t.Run("idempotent_after_quota_exhaustion", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				requestID := preConsumeTestRequestID("preconsume-exhausted-replay", userID)
+				sub := newPreConsumeTestSubscription(t, userID, 25)
+				first, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 25)
+				require.NoError(t, err)
+				replay, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 25)
+				require.NoError(t, err)
+				assert.Equal(t, first.UserSubscriptionId, replay.UserSubscriptionId)
+				assert.Equal(t, first.PreConsumed, replay.PreConsumed)
+				assert.Equal(t, first.AmountUsedAfter, replay.AmountUsedAfter)
+				assert.Equal(t, sub.Id, replay.UserSubscriptionId)
+				assert.EqualValues(t, 25, quotaRuleUsage(t, sub)[0].AmountUsed)
+			})
+
+			t.Run("owner_mismatch_and_refunded_replay", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				requestID := preConsumeTestRequestID("preconsume-owner-check", userID)
+				sub := newPreConsumeTestSubscription(t, userID, 100)
+				_, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+				require.NoError(t, err)
+				_, err = PreConsumeUserSubscription(requestID, userID+1, "model", 0, 10)
+				require.ErrorContains(t, err, "owner mismatch")
+				require.NoError(t, RefundSubscriptionPreConsume(requestID))
+				_, err = PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+				require.ErrorContains(t, err, "already refunded")
+				assert.Zero(t, quotaRuleUsage(t, sub)[0].AmountUsed)
+			})
+
+			t.Run("quota_failure_and_transaction_rollback", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				quotaRequestID := preConsumeTestRequestID("preconsume-quota-full", userID)
+				sub := newPreConsumeTestSubscription(t, userID, 5)
+				_, err := PreConsumeUserSubscription(quotaRequestID, userID, "model", 0, 6)
+				require.ErrorContains(t, err, "subscription quota insufficient")
+				assert.Zero(t, quotaRuleUsage(t, sub)[0].AmountUsed)
+
+				rollbackUserID := nextPreConsumeTestUserID()
+				rollbackRequestID := preConsumeTestRequestID("preconsume-rollback", rollbackUserID)
+				rollbackSub := newPreConsumeTestSubscription(t, rollbackUserID, 100)
+				before := quotaRuleUsage(t, rollbackSub)[0]
+				callbackName := "test:fail_subscription_allocation"
+				require.NoError(t, DB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+					if tx.Statement.Table == "subscription_quota_allocations" {
+						tx.AddError(errors.New("forced allocation insert failure"))
+					}
+				}))
+				_, err = PreConsumeUserSubscription(rollbackRequestID, rollbackUserID, "model", 0, 10)
+				assert.ErrorContains(t, err, "forced allocation insert failure")
+				assert.NoError(t, DB.Callback().Create().Remove(callbackName))
+				after := quotaRuleUsage(t, rollbackSub)[0]
+				assert.Equal(t, before.AmountUsed, after.AmountUsed)
+				var records int64
+				assert.NoError(t, DB.Model(&SubscriptionPreConsumeRecord{}).Where("request_id = ?", rollbackRequestID).Count(&records).Error)
+				assert.Zero(t, records)
+			})
+		})
+	}
+}
+
+func synchronizeInitialPreConsumeLookups(t *testing.T) func() {
+	t.Helper()
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	callbackName := "test:barrier_subscription_preconsume_lookup"
+	require.NoError(t, DB.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "subscription_pre_consume_records" {
+			return
+		}
+		select {
+		case arrived <- struct{}{}:
+			<-release
+		default:
+		}
+	}))
+	t.Cleanup(func() { assert.NoError(t, DB.Callback().Query().Remove(callbackName)) })
+	return func() {
+		<-arrived
+		<-arrived
+		close(release)
+	}
+}
+
+func synchronizePreConsumeCreates(t *testing.T) func() {
+	t.Helper()
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	callbackName := "test:barrier_subscription_preconsume_create"
+	require.NoError(t, DB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "subscription_pre_consume_records" {
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+	}))
+	t.Cleanup(func() { assert.NoError(t, DB.Callback().Create().Remove(callbackName)) })
+	return func() {
+		<-arrived
+		<-arrived
+		close(release)
+	}
+}
+
+func runConcurrentPreConsumes(requestIDs []string, userIDs []int, release func()) []error {
+	errs := make(chan error, len(userIDs))
+	var workers sync.WaitGroup
+	for i, userID := range userIDs {
+		requestID := requestIDs[i]
+		workers.Go(func() {
+			_, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+			errs <- err
+		})
+	}
+	release()
+	workers.Wait()
+	close(errs)
+	result := make([]error, 0, len(userIDs))
+	for err := range errs {
+		result = append(result, err)
+	}
+	return result
+}
+
+func TestPreConsumeSubscriptionConcurrentRequestsAcrossDatabases(t *testing.T) {
+	for _, dialect := range []string{"mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			openSubscriptionPreConsumeTestDB(t, dialect)
+
+			t.Run("different_users_reserve_independently", func(t *testing.T) {
+				userIDs := []int{nextPreConsumeTestUserID(), nextPreConsumeTestUserID()}
+				subs := []*UserSubscription{
+					newPreConsumeTestSubscription(t, userIDs[0], 100),
+					newPreConsumeTestSubscription(t, userIDs[1], 100),
+				}
+				requestIDs := []string{preConsumeTestRequestID("preconsume-distinct-users", userIDs[0]), preConsumeTestRequestID("preconsume-distinct-users", userIDs[1])}
+				releaseLookups := synchronizeInitialPreConsumeLookups(t)
+				releaseCreates := synchronizePreConsumeCreates(t)
+				errs := runConcurrentPreConsumes(requestIDs, userIDs, func() {
+					releaseLookups()
+					releaseCreates()
+				})
+				for _, err := range errs {
+					require.NoError(t, err)
+				}
+				for _, sub := range subs {
+					assert.EqualValues(t, 10, quotaRuleUsage(t, sub)[0].AmountUsed)
+				}
+			})
+
+			t.Run("same_request_reserves_once_after_quota_exhaustion", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				sub := newPreConsumeTestSubscription(t, userID, 10)
+				requestID := preConsumeTestRequestID("preconsume-same-request", userID)
+				release := synchronizeInitialPreConsumeLookups(t)
+				errs := runConcurrentPreConsumes([]string{requestID, requestID}, []int{userID, userID}, release)
+				for _, err := range errs {
+					require.NoError(t, err)
+				}
+				assert.EqualValues(t, 10, quotaRuleUsage(t, sub)[0].AmountUsed)
+				var count int64
+				require.NoError(t, DB.Model(&SubscriptionPreConsumeRecord{}).Where("request_id = ?", requestID).Count(&count).Error)
+				assert.EqualValues(t, 1, count)
+			})
+
+			t.Run("same_request_different_owners_rolls_back_loser", func(t *testing.T) {
+				userIDs := []int{nextPreConsumeTestUserID(), nextPreConsumeTestUserID()}
+				subs := []*UserSubscription{
+					newPreConsumeTestSubscription(t, userIDs[0], 100),
+					newPreConsumeTestSubscription(t, userIDs[1], 100),
+				}
+				requestID := preConsumeTestRequestID("preconsume-owner-race", userIDs[0])
+				releaseLookups := synchronizeInitialPreConsumeLookups(t)
+				releaseCreates := synchronizePreConsumeCreates(t)
+				errs := runConcurrentPreConsumes([]string{requestID, requestID}, userIDs, func() {
+					releaseLookups()
+					releaseCreates()
+				})
+				var successCount, ownerMismatchCount int
+				for _, err := range errs {
+					if err == nil {
+						successCount++
+					} else if strings.Contains(err.Error(), "owner mismatch") {
+						ownerMismatchCount++
+					} else {
+						require.NoError(t, err)
+					}
+				}
+				assert.Equal(t, 1, successCount)
+				assert.Equal(t, 1, ownerMismatchCount)
+				used := []int64{quotaRuleUsage(t, subs[0])[0].AmountUsed, quotaRuleUsage(t, subs[1])[0].AmountUsed}
+				assert.ElementsMatch(t, []int64{0, 10}, used)
+			})
+		})
+	}
 }
