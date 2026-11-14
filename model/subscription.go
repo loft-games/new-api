@@ -1034,14 +1034,6 @@ func AdminDeleteUserSubscription(userSubscriptionId int) (*common.Message, error
 			Where("id = ?", userSubscriptionId).First(&sub).Error; err != nil {
 			return err
 		}
-		var allocations int64
-		requests := tx.Model(&SubscriptionPreConsumeRecord{}).Select("request_id").Where("user_subscription_id = ?", sub.Id)
-		if err := tx.Model(&SubscriptionQuotaAllocation{}).Where("request_id IN (?)", requests).Count(&allocations).Error; err != nil {
-			return err
-		}
-		if allocations > 0 {
-			return common.NewMessage("Subscriptions with billing history cannot be deleted; cancel instead")
-		}
 		userId = sub.UserId
 		target, err := downgradeUserGroupForSubscriptionTx(tx, &sub, now)
 		if err != nil {

@@ -376,8 +376,6 @@ func TestSubscriptionQuotaRulesSkipIdleCyclesAndKeepOriginalAnchor(t *testing.T)
 	rules := quotaRuleUsage(t, sub)
 	_, err := PreConsumeUserSubscription("idle-first", 801, "model", 0, 50)
 	require.NoError(t, err)
-	_, err = AdminDeleteUserSubscription(sub.Id)
-	require.ErrorContains(t, err, "billing history")
 	now := start + 4*18000 + 123
 	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error { return refreshSubscriptionQuotaTx(tx, sub, now, false, false) }))
 	current := quotaRuleUsage(t, sub)[0]
@@ -499,6 +497,45 @@ func TestPreConsumeSubscriptionBehaviorAcrossDatabases(t *testing.T) {
 				_, err = PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
 				require.ErrorContains(t, err, "already refunded")
 				assert.Zero(t, quotaRuleUsage(t, sub)[0].AmountUsed)
+			})
+
+			t.Run("delete_subscription_with_billing_history", func(t *testing.T) {
+				for _, tc := range []struct {
+					name   string
+					status string
+					refund bool
+				}{
+					{name: "active", status: "active"},
+					{name: "expired", status: "expired"},
+					{name: "cancelled", status: "cancelled"},
+					{name: "refunded", status: "active", refund: true},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						userID := nextPreConsumeTestUserID()
+						requestID := preConsumeTestRequestID("delete-used-subscription", userID)
+						sub := newPreConsumeTestSubscription(t, userID, 100)
+						_, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+						require.NoError(t, err)
+						if tc.refund {
+							require.NoError(t, RefundSubscriptionPreConsume(requestID))
+						}
+						require.NoError(t, DB.Model(sub).Update("status", tc.status).Error)
+						before, err := GetSubscriptionRequestQuotaUsage(requestID)
+						require.NoError(t, err)
+
+						_, err = AdminDeleteUserSubscription(sub.Id)
+						require.NoError(t, err)
+						var remaining int64
+						require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", sub.Id).Count(&remaining).Error)
+						assert.Zero(t, remaining)
+						var record SubscriptionPreConsumeRecord
+						require.NoError(t, DB.Where("request_id = ?", requestID).First(&record).Error)
+						assert.Equal(t, sub.Id, record.UserSubscriptionId)
+						usage, err := GetSubscriptionRequestQuotaUsage(requestID)
+						require.NoError(t, err)
+						assert.Equal(t, before, usage)
+					})
+				}
 			})
 
 			t.Run("quota_failure_and_transaction_rollback", func(t *testing.T) {
