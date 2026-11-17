@@ -7781,6 +7781,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Disallow subscription deductions": "Interdire les déductions sur abonnement",
+    "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.": "Les groupes qui interdisent les déductions sur abonnement sont facturés sur le portefeuille. Les requêtes en mode abonnement uniquement renvoient un quota insuffisant.",
+    "Expected a JSON object mapping group names to booleans": "Un objet JSON associant les noms de groupe à des booléens est attendu"
   }
 }

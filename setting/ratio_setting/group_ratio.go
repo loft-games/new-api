@@ -28,9 +28,10 @@ var groupGroupRatioMap = types.NewRWMap[string, map[string]float64]()
 var defaultGroupSpecialUsableGroup = map[string]map[string]string{}
 
 type GroupRatioSetting struct {
-	GroupRatio              *types.RWMap[string, float64]            `json:"group_ratio"`
-	GroupGroupRatio         *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
-	GroupSpecialUsableGroup *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
+	GroupDisableSubscription *types.RWMap[string, bool]               `json:"group_disable_subscription"`
+	GroupRatio               *types.RWMap[string, float64]            `json:"group_ratio"`
+	GroupGroupRatio          *types.RWMap[string, map[string]float64] `json:"group_group_ratio"`
+	GroupSpecialUsableGroup  *types.RWMap[string, map[string]string]  `json:"group_special_usable_group"`
 }
 
 var groupRatioSetting GroupRatioSetting
@@ -43,15 +44,19 @@ func init() {
 	groupGroupRatioMap.AddAll(defaultGroupGroupRatio)
 
 	groupRatioSetting = GroupRatioSetting{
-		GroupSpecialUsableGroup: groupSpecialUsableGroup,
-		GroupRatio:              groupRatioMap,
-		GroupGroupRatio:         groupGroupRatioMap,
+		GroupDisableSubscription: types.NewRWMap[string, bool](),
+		GroupSpecialUsableGroup:  groupSpecialUsableGroup,
+		GroupRatio:               groupRatioMap,
+		GroupGroupRatio:          groupGroupRatioMap,
 	}
 
 	config.GlobalConfig.Register("group_ratio_setting", &groupRatioSetting)
 }
 
 func GetGroupRatioSetting() *GroupRatioSetting {
+	if groupRatioSetting.GroupDisableSubscription == nil {
+		groupRatioSetting.GroupDisableSubscription = types.NewRWMap[string, bool]()
+	}
 	if groupRatioSetting.GroupSpecialUsableGroup == nil {
 		groupRatioSetting.GroupSpecialUsableGroup = types.NewRWMap[string, map[string]string]()
 		groupRatioSetting.GroupSpecialUsableGroup.AddAll(defaultGroupSpecialUsableGroup)

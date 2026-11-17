@@ -237,6 +237,17 @@ func SyncOptions(frequency int) {
 }
 
 func validateOptionValue(key string, value string) error {
+	if key == "group_ratio_setting.group_disable_subscription" {
+		var groups map[string]any
+		if err := common.UnmarshalJsonStr(value, &groups); err != nil || groups == nil {
+			return common.NewMessage("Expected a JSON object mapping group names to booleans")
+		}
+		for _, enabled := range groups {
+			if _, ok := enabled.(bool); !ok {
+				return common.NewMessage("Expected a JSON object mapping group names to booleans")
+			}
+		}
+	}
 	if key == legacyAccessTokenRetireAtKey {
 		return errLegacyRetireAtReadOnly
 	}
