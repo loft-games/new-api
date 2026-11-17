@@ -234,6 +234,8 @@ export function SubscriptionPurchaseDialog(props: Props) {
           {t('Purchase Subscription')}
         </>
       }
+      description={plan.subtitle || undefined}
+      descriptionClassName='whitespace-pre-wrap break-words'
       contentClassName='max-sm:w-[calc(100vw-1.5rem)] sm:max-w-md'
       titleClassName='flex items-center gap-2'
       contentHeight='auto'
