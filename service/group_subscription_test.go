@@ -83,7 +83,7 @@ func TestGroupSubscriptionBillingDatabaseMatrix(t *testing.T) {
 				require.NoError(t, model.PurgeSubscriptionPlanCache())
 			})
 			for range 2 {
-				require.NoError(t, db.AutoMigrate(&model.Option{}, &model.SystemTask{}, &model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPreConsumeRecord{}))
+				require.NoError(t, db.AutoMigrate(&model.Option{}, &model.SystemTask{}, &model.User{}, &model.Token{}, &model.SubscriptionPlan{}, &model.UserSubscription{}, &model.SubscriptionPlanQuotaRule{}, &model.UserSubscriptionQuotaRule{}, &model.SubscriptionQuotaPeriod{}, &model.SubscriptionQuotaAllocation{}, &model.SubscriptionPreConsumeRecord{}))
 			}
 			query := "select version()"
 			if dialect == common.DatabaseTypeSQLite {
@@ -134,6 +134,12 @@ func TestGroupSubscriptionBillingDatabaseMatrix(t *testing.T) {
 					require.NoError(t, config.GlobalConfig.LoadFromDB(map[string]string{optionKey: saved.Value}))
 					t.Cleanup(func() {
 						require.NoError(t, db.Where("user_id = ?", user.Id).Delete(&model.SubscriptionPreConsumeRecord{}).Error)
+						for _, rule := range subscription.QuotaRules {
+							require.NoError(t, db.Where("rule_id = ?", rule.Id).Delete(&model.SubscriptionQuotaAllocation{}).Error)
+							require.NoError(t, db.Where("rule_id = ?", rule.Id).Delete(&model.SubscriptionQuotaPeriod{}).Error)
+						}
+						require.NoError(t, db.Where("user_subscription_id = ?", subscription.Id).Delete(&model.UserSubscriptionQuotaRule{}).Error)
+						require.NoError(t, db.Where("plan_id = ?", plan.Id).Delete(&model.SubscriptionPlanQuotaRule{}).Error)
 						require.NoError(t, db.Delete(&subscription).Error)
 						require.NoError(t, db.Delete(&plan).Error)
 						require.NoError(t, db.Unscoped().Delete(&token).Error)
@@ -175,9 +181,12 @@ func TestGroupSubscriptionBillingDatabaseMatrix(t *testing.T) {
 					}
 					require.NoError(t, db.First(&user, user.Id).Error)
 					require.NoError(t, db.First(&subscription, subscription.Id).Error)
+					subscriptions := []model.UserSubscription{subscription}
+					require.NoError(t, model.LoadUserSubscriptionQuotaRules(db, subscriptions))
+					require.Len(t, subscriptions[0].QuotaRules, 1)
 					require.NoError(t, db.First(&token, token.Id).Error)
 					assert.Equal(t, wantWallet, user.Quota)
-					assert.Equal(t, wantSubscription, subscription.AmountUsed)
+					assert.Equal(t, wantSubscription, subscriptions[0].QuotaRules[0].AmountUsed)
 					assert.Equal(t, wantToken, token.RemainQuota)
 				})
 			}
