@@ -37,6 +37,13 @@ it('shows the complete multiline plan subtitle in the purchase dialog', () => {
     sort_order: 0,
     max_purchase_per_user: 0,
     total_amount: 1000,
+    quota_rules: [
+      {
+        total_amount: 1000,
+        quota_reset_period: 'never',
+        quota_reset_custom_seconds: 0,
+      },
+    ],
   })
   const client = new QueryClient()
   render(
@@ -67,6 +74,13 @@ it.each([undefined, ''])(
       sort_order: 0,
       max_purchase_per_user: 0,
       total_amount: 100,
+      quota_rules: [
+        {
+          total_amount: 100,
+          quota_reset_period: 'never',
+          quota_reset_custom_seconds: 0,
+        },
+      ],
     })
     render(
       <QueryClientProvider client={new QueryClient()}>
