@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { type TFunction } from 'i18next'
+import type { TFunction } from 'i18next'
 
 // ============================================================================
 // Duration Unit Options
@@ -35,7 +35,7 @@ export const RESET_PERIODS = [
   { value: 'daily', labelKey: 'Daily' },
   { value: 'weekly', labelKey: 'Weekly' },
   { value: 'monthly', labelKey: 'Monthly' },
-  { value: 'custom', labelKey: 'Custom (seconds)' },
+  { value: 'custom', labelKey: 'Custom' },
 ] as const
 
 export function getDurationUnitOptions(t: TFunction) {

@@ -25,6 +25,35 @@ import type { SubscriptionPlan, PlanPayload } from '../types'
 
 export function getPlanFormSchema(t: TFunction) {
   return z.object({
+    quota_rules: z
+      .array(
+        z
+          .object({
+            total_amount: z.coerce.number().finite().min(0),
+            quota_reset_period: z.enum([
+              'never',
+              'daily',
+              'weekly',
+              'monthly',
+              'custom',
+            ]),
+            quota_reset_custom_seconds: z.coerce
+              .number()
+              .int()
+              .min(0)
+              .max(9223372036),
+          })
+          .refine(
+            (r) =>
+              r.quota_reset_period !== 'custom' ||
+              r.quota_reset_custom_seconds > 0,
+            {
+              message: t('Custom reset cycle must be greater than 0 seconds'),
+              path: ['quota_reset_custom_seconds'],
+            }
+          )
+      )
+      .min(1, t('At least one quota rule is required')),
     title: z.string().min(1, t('Please enter plan title')),
     subtitle: z.string().optional(),
     price_amount: z.coerce.number().min(0, t('Please enter amount')),
@@ -56,6 +85,13 @@ export function getPlanFormSchema(t: TFunction) {
 export type PlanFormValues = z.infer<ReturnType<typeof getPlanFormSchema>>
 
 export const PLAN_FORM_DEFAULTS: PlanFormValues = {
+  quota_rules: [
+    {
+      total_amount: 0,
+      quota_reset_period: 'never',
+      quota_reset_custom_seconds: 0,
+    },
+  ],
   title: '',
   subtitle: '',
   price_amount: 0,
@@ -79,6 +115,11 @@ export const PLAN_FORM_DEFAULTS: PlanFormValues = {
 
 export function planToFormValues(plan: SubscriptionPlan): PlanFormValues {
   return {
+    quota_rules: plan.quota_rules.map((rule) => ({
+      total_amount: quotaUnitsToDollars(rule.total_amount),
+      quota_reset_period: rule.quota_reset_period,
+      quota_reset_custom_seconds: rule.quota_reset_custom_seconds,
+    })),
     title: plan.title || '',
     subtitle: plan.subtitle || '',
     price_amount: Number(plan.price_amount || 0),
@@ -105,6 +146,14 @@ export function formValuesToPlanPayload(values: PlanFormValues): PlanPayload {
   return {
     plan: {
       ...values,
+      quota_rules: values.quota_rules.map((rule) => ({
+        total_amount: parseQuotaFromDollars(rule.total_amount),
+        quota_reset_period: rule.quota_reset_period,
+        quota_reset_custom_seconds:
+          rule.quota_reset_period === 'custom'
+            ? rule.quota_reset_custom_seconds
+            : 0,
+      })),
       price_amount: Number(values.price_amount || 0),
       currency: 'USD',
       duration_value: Number(values.duration_value || 0),

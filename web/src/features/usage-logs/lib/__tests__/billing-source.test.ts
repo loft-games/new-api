@@ -33,6 +33,16 @@ function plan(enabled: boolean): PlanRecord {
 const active: UserSubscriptionRecord[] = [
   {
     subscription: {
+      quota_rules: [
+        {
+          total_amount: 100,
+          quota_reset_period: 'never',
+          quota_reset_custom_seconds: 0,
+          amount_used: 0,
+          last_reset_time: 0,
+          next_reset_time: 0,
+        },
+      ],
       id: 7,
       user_id: 3,
       plan_id: 1,

@@ -1,13 +1,26 @@
 package model
 
 import (
+	"errors"
+	"fmt"
+	"math"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/QuantumNous/new-api/common"
+	"github.com/glebarez/sqlite"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gorm.io/driver/mysql"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
 )
+
+var subscriptionPreConsumeTestUserID atomic.Int64
 
 func seedSubscriptionResetPlan(t *testing.T, plan *SubscriptionPlan) {
 	t.Helper()
@@ -16,13 +29,19 @@ func seedSubscriptionResetPlan(t *testing.T, plan *SubscriptionPlan) {
 
 func seedSubscriptionResetSub(t *testing.T, sub *UserSubscription) {
 	t.Helper()
-	require.NoError(t, DB.Create(sub).Error)
+	require.NoError(t, DB.Session(&gorm.Session{SkipHooks: true}).Create(sub).Error)
+	require.NoError(t, MigrateSubscriptionQuotaRules(DB))
 }
 
 func getSubscriptionResetSub(t *testing.T, id int) UserSubscription {
 	t.Helper()
 	var sub UserSubscription
 	require.NoError(t, DB.Where("id = ?", id).First(&sub).Error)
+	subs := []UserSubscription{sub}
+	require.NoError(t, LoadUserSubscriptionQuotaRules(DB, subs))
+	sub.AmountUsed = subs[0].QuotaRules[0].AmountUsed
+	sub.LastResetTime = subs[0].QuotaRules[0].LastResetTime
+	sub.NextResetTime = subs[0].QuotaRules[0].NextResetTime
 	return sub
 }
 
@@ -198,4 +217,490 @@ func TestAdminResetPlanSubscriptionsNoMatchSucceeds(t *testing.T) {
 	assert.Zero(t, result.ResetCount)
 	assert.Zero(t, result.UserCount)
 	assert.Empty(t, result.AffectedUserIds)
+}
+
+func quotaRulesFixture(t *testing.T, rules []SubscriptionPlanQuotaRule) *UserSubscription {
+	t.Helper()
+	truncateTables(t)
+	plan := &SubscriptionPlan{Title: t.Name(), DurationUnit: SubscriptionDurationMonth, DurationValue: 1, QuotaRules: rules}
+	require.NoError(t, DB.Create(plan).Error)
+	var sub *UserSubscription
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		sub, err = CreateUserSubscriptionFromPlanTx(tx, 801, plan, "test")
+		return err
+	}))
+	return sub
+}
+
+func quotaRuleUsage(t *testing.T, sub *UserSubscription) []UserSubscriptionQuotaRule {
+	t.Helper()
+	subs := []UserSubscription{*sub}
+	require.NoError(t, LoadUserSubscriptionQuotaRules(DB, subs))
+	return subs[0].QuotaRules
+}
+
+func TestSubscriptionQuotaRulesIndependentLimitsAndPeriodRefund(t *testing.T) {
+	sub := quotaRulesFixture(t, []SubscriptionPlanQuotaRule{
+		{SubscriptionQuotaSpec: SubscriptionQuotaSpec{100, SubscriptionResetCustom, 18000}},
+		{SubscriptionQuotaSpec: SubscriptionQuotaSpec{150, SubscriptionResetWeekly, 0}},
+	})
+	first, err := PreConsumeUserSubscription("quota-first", 801, "model", 0, 100)
+	require.NoError(t, err)
+	assert.Equal(t, sub.Id, first.UserSubscriptionId)
+	_, err = PreConsumeUserSubscription("quota-blocked", 801, "model", 0, 1)
+	require.ErrorContains(t, err, "subscription quota insufficient")
+	rules := quotaRuleUsage(t, sub)
+	assert.EqualValues(t, 100, rules[0].AmountUsed)
+	assert.EqualValues(t, 100, rules[1].AmountUsed)
+	oldPeriod := rules[0].CurrentPeriodId
+	now := GetDBTimestamp()
+	require.NoError(t, DB.Model(&UserSubscriptionQuotaRule{}).Where("id = ?", rules[0].Id).Updates(map[string]any{"last_reset_time": now - 18000, "next_reset_time": now}).Error)
+	_, err = PreConsumeUserSubscription("quota-second", 801, "model", 0, 50)
+	require.NoError(t, err)
+	rules = quotaRuleUsage(t, sub)
+	assert.EqualValues(t, 50, rules[0].AmountUsed)
+	assert.EqualValues(t, 150, rules[1].AmountUsed)
+	assert.NotEqual(t, oldPeriod, rules[0].CurrentPeriodId)
+	_, err = PreConsumeUserSubscription("quota-week-blocked", 801, "model", 0, 1)
+	require.ErrorContains(t, err, "subscription quota insufficient")
+	require.NoError(t, RefundSubscriptionPreConsume("quota-first"))
+	require.NoError(t, RefundSubscriptionPreConsume("quota-first"))
+	rules = quotaRuleUsage(t, sub)
+	assert.EqualValues(t, 50, rules[0].AmountUsed, "refund must not release the new five-hour period")
+	assert.EqualValues(t, 50, rules[1].AmountUsed)
+	var period SubscriptionQuotaPeriod
+	require.NoError(t, DB.First(&period, oldPeriod).Error)
+	assert.Zero(t, period.AmountUsed)
+	_, err = PreConsumeUserSubscription("quota-after-refund", 801, "model", 0, 50)
+	require.NoError(t, err)
+}
+
+func TestSubscriptionQuotaRulesReserveRollbackSettlementAndSnapshot(t *testing.T) {
+	sub := quotaRulesFixture(t, []SubscriptionPlanQuotaRule{
+		{SubscriptionQuotaSpec: SubscriptionQuotaSpec{100, SubscriptionResetDaily, 0}},
+		{SubscriptionQuotaSpec: SubscriptionQuotaSpec{60, SubscriptionResetWeekly, 0}},
+	})
+	_, err := PreConsumeUserSubscription("quota-reserve", 801, "model", 0, 50)
+	require.NoError(t, err)
+	require.Error(t, AdjustSubscriptionRequestQuota("quota-reserve", sub.Id, 20, true))
+	for _, r := range quotaRuleUsage(t, sub) {
+		assert.EqualValues(t, 50, r.AmountUsed)
+	}
+	// Actual usage is recorded even when it exceeds the original reservation.
+	require.NoError(t, AdjustSubscriptionRequestQuota("quota-reserve", sub.Id, 20, false))
+	for _, r := range quotaRuleUsage(t, sub) {
+		assert.EqualValues(t, 70, r.AmountUsed)
+	}
+	_, err = PreConsumeUserSubscription("quota-over-limit", 801, "model", 0, 1)
+	require.ErrorContains(t, err, "subscription quota insufficient")
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		return ReplaceSubscriptionPlanQuotaRulesTx(tx, &SubscriptionPlan{Id: sub.PlanId}, []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{1000, SubscriptionResetMonthly, 0}}})
+	}))
+	rules := quotaRuleUsage(t, sub)
+	require.Len(t, rules, 2)
+	assert.EqualValues(t, 60, rules[1].TotalAmount)
+	assert.Equal(t, SubscriptionResetWeekly, rules[1].QuotaResetPeriod)
+	resetNow := GetDBTimestamp()
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error { return refreshSubscriptionQuotaTx(tx, sub, resetNow, true, false) }))
+	for _, r := range quotaRuleUsage(t, sub) {
+		assert.Zero(t, r.AmountUsed)
+	}
+	require.NoError(t, AdjustSubscriptionRequestQuota("quota-reserve", sub.Id, -20, false))
+	for _, r := range quotaRuleUsage(t, sub) {
+		assert.Zero(t, r.AmountUsed, "late settlement must stay in the archived period")
+	}
+}
+
+func TestSubscriptionQuotaRulesIdempotencyMissingRulesAndOverflow(t *testing.T) {
+	sub := quotaRulesFixture(t, []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{0, SubscriptionResetNever, 0}}})
+	_, err := PreConsumeUserSubscription("quota-retry", 801, "model", 0, 25)
+	require.NoError(t, err)
+	_, err = PreConsumeUserSubscription("quota-retry", 801, "model", 0, 25)
+	require.NoError(t, err)
+	assert.EqualValues(t, 25, quotaRuleUsage(t, sub)[0].AmountUsed)
+	require.Error(t, AdjustSubscriptionRequestQuota("quota-retry", sub.Id, math.MaxInt64, false))
+	assert.EqualValues(t, 25, quotaRuleUsage(t, sub)[0].AmountUsed)
+	// Cleanup must retain request identities needed for delayed task refunds.
+	require.NoError(t, DB.Model(&SubscriptionPreConsumeRecord{}).Where("request_id = ?", "quota-retry").UpdateColumn("updated_at", GetDBTimestamp()-30*86400).Error)
+	removed, err := CleanupSubscriptionPreConsumeRecords(7 * 86400)
+	require.NoError(t, err)
+	assert.Zero(t, removed)
+	require.NoError(t, DB.Where("user_subscription_id = ?", sub.Id).Delete(&UserSubscriptionQuotaRule{}).Error)
+	_, err = PreConsumeUserSubscription("quota-missing", 801, "model", 0, 1)
+	require.ErrorContains(t, err, "quota rules missing")
+}
+
+func TestSubscriptionQuotaRulesMigrationPreservesLegacyState(t *testing.T) {
+	truncateTables(t)
+	now := GetDBTimestamp()
+	plan := &SubscriptionPlan{Title: "legacy", TotalAmount: 100, QuotaResetPeriod: SubscriptionResetWeekly}
+	require.NoError(t, DB.Session(&gorm.Session{SkipHooks: true}).Create(plan).Error)
+	sub := &UserSubscription{PlanId: plan.Id, UserId: 801, AmountTotal: 75, AmountUsed: 47, StartTime: now - 3600, EndTime: now + 86400*30, LastResetTime: now - 3600, NextResetTime: now + 7200, Status: "active"}
+	require.NoError(t, DB.Session(&gorm.Session{SkipHooks: true}).Create(sub).Error)
+	require.NoError(t, MigrateSubscriptionQuotaRules(DB))
+	require.NoError(t, MigrateSubscriptionQuotaRules(DB))
+	rules := quotaRuleUsage(t, sub)
+	require.Len(t, rules, 1)
+	assert.EqualValues(t, 75, rules[0].TotalAmount)
+	assert.EqualValues(t, 47, rules[0].AmountUsed)
+	assert.Equal(t, sub.LastResetTime, rules[0].LastResetTime)
+	assert.Equal(t, sub.NextResetTime, rules[0].NextResetTime)
+	var count int64
+	require.NoError(t, DB.Model(&SubscriptionQuotaPeriod{}).Where("rule_id = ?", rules[0].Id).Count(&count).Error)
+	assert.EqualValues(t, 1, count)
+}
+
+func TestSubscriptionQuotaRulesValidationAndCalendarBoundaries(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		rules []SubscriptionPlanQuotaRule
+	}{
+		{"empty", []SubscriptionPlanQuotaRule{}},
+		{"negative", []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{-1, SubscriptionResetNever, 0}}}},
+		{"unknown", []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{1, "unknown", 0}}}},
+		{"zero duration", []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{1, SubscriptionResetCustom, 0}}}},
+		{"overflow", []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{1, SubscriptionResetCustom, math.MaxInt64}}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) { require.Error(t, ValidateSubscriptionQuotaRules(tc.rules)) })
+	}
+	base := time.Date(2026, 11, 8, 23, 59, 59, 0, time.Local)
+	assert.Equal(t, time.Date(2026, 11, 9, 0, 0, 0, 0, time.Local).Unix(), calcNextResetTime(base, &SubscriptionPlan{QuotaResetPeriod: SubscriptionResetWeekly}, 0))
+	assert.Equal(t, base.Unix()+18000, calcNextResetTime(base, &SubscriptionPlan{QuotaResetPeriod: SubscriptionResetCustom, QuotaResetCustomSeconds: 18000}, 0))
+	assert.Zero(t, calcNextResetTime(base, &SubscriptionPlan{QuotaResetPeriod: SubscriptionResetCustom, QuotaResetCustomSeconds: 18000}, base.Unix()+100))
+}
+
+func TestSubscriptionQuotaRulesSkipIdleCyclesAndKeepOriginalAnchor(t *testing.T) {
+	sub := quotaRulesFixture(t, []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{100, SubscriptionResetCustom, 18000}}})
+	start := sub.StartTime
+	rules := quotaRuleUsage(t, sub)
+	_, err := PreConsumeUserSubscription("idle-first", 801, "model", 0, 50)
+	require.NoError(t, err)
+	now := start + 4*18000 + 123
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error { return refreshSubscriptionQuotaTx(tx, sub, now, false, false) }))
+	current := quotaRuleUsage(t, sub)[0]
+	assert.Zero(t, current.AmountUsed)
+	assert.Equal(t, start+4*18000, current.LastResetTime)
+	assert.Equal(t, start+5*18000, current.NextResetTime)
+	assert.NotEqual(t, rules[0].CurrentPeriodId, current.CurrentPeriodId)
+	require.NoError(t, AdjustSubscriptionRequestQuota("idle-first", sub.Id, 20, false))
+	assert.Zero(t, quotaRuleUsage(t, sub)[0].AmountUsed)
+	require.NoError(t, RefundSubscriptionPreConsume("idle-first"))
+	var old SubscriptionQuotaPeriod
+	require.NoError(t, DB.First(&old, rules[0].CurrentPeriodId).Error)
+	assert.Zero(t, old.AmountUsed, "full refund includes the additional settlement in the original period")
+	require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", sub.Id).Update("end_time", GetDBTimestamp()-1).Error)
+	_, err = PreConsumeUserSubscription("expired", 801, "model", 0, 1)
+	require.ErrorContains(t, err, "no active subscription")
+}
+
+func openSubscriptionPreConsumeTestDB(t *testing.T, dialect string) {
+	t.Helper()
+	var dialector gorm.Dialector
+	switch dialect {
+	case "sqlite":
+		dialector = sqlite.Open(":memory:")
+	case "mysql":
+		dsn := os.Getenv("TEST_MYSQL_DSN")
+		if dsn == "" {
+			t.Skip("TEST_MYSQL_DSN is not configured")
+		}
+		dialector = mysql.Open(dsn)
+	case "postgres":
+		dsn := os.Getenv("TEST_POSTGRES_DSN")
+		if dsn == "" {
+			t.Skip("TEST_POSTGRES_DSN is not configured")
+		}
+		dialector = postgres.Open(dsn)
+	default:
+		t.Fatalf("unknown dialect %q", dialect)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := db.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(8)
+	previousDB, previousLogDB := DB, LOG_DB
+	previousMain, previousLog := common.MainDatabaseType(), common.LogDatabaseType()
+	DB, LOG_DB = db, db
+	databaseType := common.DatabaseType(dialect)
+	common.SetDatabaseTypes(databaseType, databaseType)
+	initCol()
+	t.Cleanup(func() {
+		DB, LOG_DB = previousDB, previousLogDB
+		common.SetDatabaseTypes(previousMain, previousLog)
+		initCol()
+		assert.NoError(t, sqlDB.Close())
+	})
+	require.NoError(t, db.AutoMigrate(&SubscriptionPlan{}, &UserSubscription{}, &SubscriptionPlanQuotaRule{}, &UserSubscriptionQuotaRule{}, &SubscriptionQuotaPeriod{}, &SubscriptionQuotaAllocation{}, &SubscriptionPreConsumeRecord{}))
+	versionQuery := "SELECT VERSION()"
+	if dialect == "sqlite" {
+		versionQuery = "SELECT sqlite_version()"
+	} else if dialect == "postgres" {
+		versionQuery = "SELECT version()"
+	}
+	var version string
+	require.NoError(t, db.Raw(versionQuery).Scan(&version).Error)
+	t.Logf("database version: %s", version)
+}
+
+func newPreConsumeTestSubscription(t *testing.T, userID int, quota int64) *UserSubscription {
+	t.Helper()
+	plan := &SubscriptionPlan{Title: t.Name(), DurationUnit: SubscriptionDurationMonth, DurationValue: 1, QuotaRules: []SubscriptionPlanQuotaRule{{SubscriptionQuotaSpec: SubscriptionQuotaSpec{TotalAmount: quota, QuotaResetPeriod: SubscriptionResetNever}}}}
+	require.NoError(t, DB.Create(plan).Error)
+	var sub *UserSubscription
+	require.NoError(t, DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		sub, err = CreateUserSubscriptionFromPlanTx(tx, userID, plan, "test")
+		return err
+	}))
+	return sub
+}
+
+func nextPreConsumeTestUserID() int {
+	return int(time.Now().Unix()%1_000_000_000)*1000 + int(subscriptionPreConsumeTestUserID.Add(1))%1000
+}
+
+func preConsumeTestRequestID(prefix string, userID int) string {
+	return fmt.Sprintf("%s-%d", prefix, userID)
+}
+
+func TestPreConsumeSubscriptionBehaviorAcrossDatabases(t *testing.T) {
+	for _, dialect := range []string{"sqlite", "mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			openSubscriptionPreConsumeTestDB(t, dialect)
+
+			t.Run("idempotent_after_quota_exhaustion", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				requestID := preConsumeTestRequestID("preconsume-exhausted-replay", userID)
+				sub := newPreConsumeTestSubscription(t, userID, 25)
+				first, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 25)
+				require.NoError(t, err)
+				replay, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 25)
+				require.NoError(t, err)
+				assert.Equal(t, first.UserSubscriptionId, replay.UserSubscriptionId)
+				assert.Equal(t, first.PreConsumed, replay.PreConsumed)
+				assert.Equal(t, first.AmountUsedAfter, replay.AmountUsedAfter)
+				assert.Equal(t, sub.Id, replay.UserSubscriptionId)
+				assert.EqualValues(t, 25, quotaRuleUsage(t, sub)[0].AmountUsed)
+			})
+
+			t.Run("owner_mismatch_and_refunded_replay", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				requestID := preConsumeTestRequestID("preconsume-owner-check", userID)
+				sub := newPreConsumeTestSubscription(t, userID, 100)
+				_, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+				require.NoError(t, err)
+				_, err = PreConsumeUserSubscription(requestID, userID+1, "model", 0, 10)
+				require.ErrorContains(t, err, "owner mismatch")
+				require.NoError(t, RefundSubscriptionPreConsume(requestID))
+				_, err = PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+				require.ErrorContains(t, err, "already refunded")
+				assert.Zero(t, quotaRuleUsage(t, sub)[0].AmountUsed)
+			})
+
+			t.Run("delete_subscription_with_billing_history", func(t *testing.T) {
+				for _, tc := range []struct {
+					name   string
+					status string
+					refund bool
+				}{
+					{name: "active", status: "active"},
+					{name: "expired", status: "expired"},
+					{name: "cancelled", status: "cancelled"},
+					{name: "refunded", status: "active", refund: true},
+				} {
+					t.Run(tc.name, func(t *testing.T) {
+						userID := nextPreConsumeTestUserID()
+						requestID := preConsumeTestRequestID("delete-used-subscription", userID)
+						sub := newPreConsumeTestSubscription(t, userID, 100)
+						_, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+						require.NoError(t, err)
+						if tc.refund {
+							require.NoError(t, RefundSubscriptionPreConsume(requestID))
+						}
+						require.NoError(t, DB.Model(sub).Update("status", tc.status).Error)
+						before, err := GetSubscriptionRequestQuotaUsage(requestID)
+						require.NoError(t, err)
+
+						_, err = AdminDeleteUserSubscription(sub.Id)
+						require.NoError(t, err)
+						var remaining int64
+						require.NoError(t, DB.Model(&UserSubscription{}).Where("id = ?", sub.Id).Count(&remaining).Error)
+						assert.Zero(t, remaining)
+						var record SubscriptionPreConsumeRecord
+						require.NoError(t, DB.Where("request_id = ?", requestID).First(&record).Error)
+						assert.Equal(t, sub.Id, record.UserSubscriptionId)
+						usage, err := GetSubscriptionRequestQuotaUsage(requestID)
+						require.NoError(t, err)
+						assert.Equal(t, before, usage)
+					})
+				}
+			})
+
+			t.Run("quota_failure_and_transaction_rollback", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				quotaRequestID := preConsumeTestRequestID("preconsume-quota-full", userID)
+				sub := newPreConsumeTestSubscription(t, userID, 5)
+				_, err := PreConsumeUserSubscription(quotaRequestID, userID, "model", 0, 6)
+				require.ErrorContains(t, err, "subscription quota insufficient")
+				assert.Zero(t, quotaRuleUsage(t, sub)[0].AmountUsed)
+
+				rollbackUserID := nextPreConsumeTestUserID()
+				rollbackRequestID := preConsumeTestRequestID("preconsume-rollback", rollbackUserID)
+				rollbackSub := newPreConsumeTestSubscription(t, rollbackUserID, 100)
+				before := quotaRuleUsage(t, rollbackSub)[0]
+				callbackName := "test:fail_subscription_allocation"
+				require.NoError(t, DB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+					if tx.Statement.Table == "subscription_quota_allocations" {
+						tx.AddError(errors.New("forced allocation insert failure"))
+					}
+				}))
+				_, err = PreConsumeUserSubscription(rollbackRequestID, rollbackUserID, "model", 0, 10)
+				assert.ErrorContains(t, err, "forced allocation insert failure")
+				assert.NoError(t, DB.Callback().Create().Remove(callbackName))
+				after := quotaRuleUsage(t, rollbackSub)[0]
+				assert.Equal(t, before.AmountUsed, after.AmountUsed)
+				var records int64
+				assert.NoError(t, DB.Model(&SubscriptionPreConsumeRecord{}).Where("request_id = ?", rollbackRequestID).Count(&records).Error)
+				assert.Zero(t, records)
+			})
+		})
+	}
+}
+
+func synchronizeInitialPreConsumeLookups(t *testing.T) func() {
+	t.Helper()
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	callbackName := "test:barrier_subscription_preconsume_lookup"
+	require.NoError(t, DB.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "subscription_pre_consume_records" {
+			return
+		}
+		select {
+		case arrived <- struct{}{}:
+			<-release
+		default:
+		}
+	}))
+	t.Cleanup(func() { assert.NoError(t, DB.Callback().Query().Remove(callbackName)) })
+	return func() {
+		<-arrived
+		<-arrived
+		close(release)
+	}
+}
+
+func synchronizePreConsumeCreates(t *testing.T) func() {
+	t.Helper()
+	arrived := make(chan struct{}, 2)
+	release := make(chan struct{})
+	callbackName := "test:barrier_subscription_preconsume_create"
+	require.NoError(t, DB.Callback().Create().Before("gorm:create").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement.Table != "subscription_pre_consume_records" {
+			return
+		}
+		arrived <- struct{}{}
+		<-release
+	}))
+	t.Cleanup(func() { assert.NoError(t, DB.Callback().Create().Remove(callbackName)) })
+	return func() {
+		<-arrived
+		<-arrived
+		close(release)
+	}
+}
+
+func runConcurrentPreConsumes(requestIDs []string, userIDs []int, release func()) []error {
+	errs := make(chan error, len(userIDs))
+	var workers sync.WaitGroup
+	for i, userID := range userIDs {
+		requestID := requestIDs[i]
+		workers.Go(func() {
+			_, err := PreConsumeUserSubscription(requestID, userID, "model", 0, 10)
+			errs <- err
+		})
+	}
+	release()
+	workers.Wait()
+	close(errs)
+	result := make([]error, 0, len(userIDs))
+	for err := range errs {
+		result = append(result, err)
+	}
+	return result
+}
+
+func TestPreConsumeSubscriptionConcurrentRequestsAcrossDatabases(t *testing.T) {
+	for _, dialect := range []string{"mysql", "postgres"} {
+		t.Run(dialect, func(t *testing.T) {
+			openSubscriptionPreConsumeTestDB(t, dialect)
+
+			t.Run("different_users_reserve_independently", func(t *testing.T) {
+				userIDs := []int{nextPreConsumeTestUserID(), nextPreConsumeTestUserID()}
+				subs := []*UserSubscription{
+					newPreConsumeTestSubscription(t, userIDs[0], 100),
+					newPreConsumeTestSubscription(t, userIDs[1], 100),
+				}
+				requestIDs := []string{preConsumeTestRequestID("preconsume-distinct-users", userIDs[0]), preConsumeTestRequestID("preconsume-distinct-users", userIDs[1])}
+				releaseLookups := synchronizeInitialPreConsumeLookups(t)
+				releaseCreates := synchronizePreConsumeCreates(t)
+				errs := runConcurrentPreConsumes(requestIDs, userIDs, func() {
+					releaseLookups()
+					releaseCreates()
+				})
+				for _, err := range errs {
+					require.NoError(t, err)
+				}
+				for _, sub := range subs {
+					assert.EqualValues(t, 10, quotaRuleUsage(t, sub)[0].AmountUsed)
+				}
+			})
+
+			t.Run("same_request_reserves_once_after_quota_exhaustion", func(t *testing.T) {
+				userID := nextPreConsumeTestUserID()
+				sub := newPreConsumeTestSubscription(t, userID, 10)
+				requestID := preConsumeTestRequestID("preconsume-same-request", userID)
+				release := synchronizeInitialPreConsumeLookups(t)
+				errs := runConcurrentPreConsumes([]string{requestID, requestID}, []int{userID, userID}, release)
+				for _, err := range errs {
+					require.NoError(t, err)
+				}
+				assert.EqualValues(t, 10, quotaRuleUsage(t, sub)[0].AmountUsed)
+				var count int64
+				require.NoError(t, DB.Model(&SubscriptionPreConsumeRecord{}).Where("request_id = ?", requestID).Count(&count).Error)
+				assert.EqualValues(t, 1, count)
+			})
+
+			t.Run("same_request_different_owners_rolls_back_loser", func(t *testing.T) {
+				userIDs := []int{nextPreConsumeTestUserID(), nextPreConsumeTestUserID()}
+				subs := []*UserSubscription{
+					newPreConsumeTestSubscription(t, userIDs[0], 100),
+					newPreConsumeTestSubscription(t, userIDs[1], 100),
+				}
+				requestID := preConsumeTestRequestID("preconsume-owner-race", userIDs[0])
+				releaseLookups := synchronizeInitialPreConsumeLookups(t)
+				releaseCreates := synchronizePreConsumeCreates(t)
+				errs := runConcurrentPreConsumes([]string{requestID, requestID}, userIDs, func() {
+					releaseLookups()
+					releaseCreates()
+				})
+				var successCount, ownerMismatchCount int
+				for _, err := range errs {
+					if err == nil {
+						successCount++
+					} else if strings.Contains(err.Error(), "owner mismatch") {
+						ownerMismatchCount++
+					} else {
+						require.NoError(t, err)
+					}
+				}
+				assert.Equal(t, 1, successCount)
+				assert.Equal(t, 1, ownerMismatchCount)
+				used := []int64{quotaRuleUsage(t, subs[0])[0].AmountUsed, quotaRuleUsage(t, subs[1])[0].AmountUsed}
+				assert.ElementsMatch(t, []int64{0, 10}, used)
+			})
+		})
+	}
 }
