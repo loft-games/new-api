@@ -1,7 +1,9 @@
 package common
 
 import (
+	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
 	"testing"
@@ -15,6 +17,33 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestRandomHeaderVariables(t *testing.T) {
+	pattern := `^prefix-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9]-[0-9a-f-]{36}$`
+	value, err := ResolveRandomHeaderVariables("prefix-{RANDOM:UUID}:{RANDOM:n0-9}-{RANDOM:UUID}")
+	require.NoError(t, err)
+	assert.Regexp(t, pattern, value)
+	other, err := ResolveRandomHeaderVariables("prefix-{RANDOM:UUID}:{RANDOM:n0-9}-{RANDOM:UUID}")
+	require.NoError(t, err)
+	assert.NotEqual(t, value, other)
+	static, err := ResolveRandomHeaderVariables("static {RANDOM:unknown}")
+	require.NoError(t, err)
+	assert.Equal(t, "static {RANDOM:unknown}", static)
+}
+
+type failingRandomReader struct{}
+
+func (failingRandomReader) Read([]byte) (int, error) { return 0, errors.New("random unavailable") }
+
+func TestRandomHeaderVariablesFailure(t *testing.T) {
+	previous := rand.Reader
+	rand.Reader = failingRandomReader{}
+	t.Cleanup(func() { rand.Reader = previous })
+	_, err := ResolveRandomHeaderVariables("{RANDOM:n0-9}")
+	require.ErrorContains(t, err, "random unavailable")
+	_, err = ResolveRandomHeaderVariables("{RANDOM:UUID}")
+	require.ErrorContains(t, err, "random unavailable")
+}
 
 func TestApplyParamOverrideTrimPrefix(t *testing.T) {
 	// trim_prefix example:

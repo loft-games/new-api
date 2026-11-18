@@ -2247,6 +2247,11 @@ function RuleEditor(ruleEditorProps: RuleEditorProps) {
             {t(MODE_DESCRIPTIONS[mode])}
           </p>
         )}
+        {mode === 'set_header' && (
+          <p className='text-muted-foreground text-xs'>
+            <code>{'X-Codex-Window-Id: {RANDOM:UUID}:{RANDOM:n0-9}'}</code>
+          </p>
+        )}
 
         {/* Description */}
         <div className='space-y-1.5'>
