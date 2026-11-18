@@ -96,6 +96,7 @@ type GroupRatioVisualEditorProps = {
   onSectionChange: (section: GroupSettingsSection) => void
   defaultUseAutoGroupField: ReactNode
   groupRatio: string
+  groupDisableSubscription: string
   topupGroupRatio: string
   userUsableGroups: string
   groupGroupRatio: string
@@ -112,6 +113,7 @@ type GroupPricingRow = {
   topupRatio: string
   selectable: boolean
   description: string
+  disableSubscription: boolean
 }
 
 type RegistryEntry = {
@@ -159,15 +161,21 @@ function parseNestedRatioMap(
 function buildGroupPricingRows(
   groupRatio: string,
   userUsableGroups: string,
-  topupGroupRatio: string
+  topupGroupRatio: string,
+  groupDisableSubscription: string
 ): GroupPricingRow[] {
   const ratioMap = parseRatioMap(groupRatio)
   const usableMap = parseUsableMap(userUsableGroups)
   const topupMap = parseRatioMap(topupGroupRatio)
+  const subscriptionMap = safeJsonParse<Record<string, boolean>>(
+    groupDisableSubscription,
+    { fallback: {}, silent: true }
+  )
   const names = new Set([
     ...Object.keys(ratioMap),
     ...Object.keys(usableMap),
     ...Object.keys(topupMap),
+    ...Object.keys(subscriptionMap),
   ])
 
   return [...names].map((name) => ({
@@ -177,6 +185,7 @@ function buildGroupPricingRows(
     topupRatio: Object.hasOwn(topupMap, name) ? String(topupMap[name]) : '',
     selectable: Object.hasOwn(usableMap, name),
     description: String(usableMap[name] ?? ''),
+    disableSubscription: subscriptionMap[name] === true,
   }))
 }
 
@@ -184,11 +193,15 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
   const groupRatio: Record<string, number> = {}
   const userUsableGroups: Record<string, string> = {}
   const topupGroupRatio: Record<string, number> = {}
+  const groupDisableSubscription: Record<string, boolean> = {}
 
   for (const row of rows) {
     const name = row.name.trim()
     if (!name) continue
     groupRatio[name] = normalizeRatio(row.ratio)
+    if (row.disableSubscription) {
+      groupDisableSubscription[name] = true
+    }
     if (row.selectable) {
       userUsableGroups[name] = row.description
     }
@@ -202,6 +215,7 @@ function serializeGroupPricingRows(rows: GroupPricingRow[]) {
     GroupRatio: JSON.stringify(groupRatio, null, 2),
     UserUsableGroups: JSON.stringify(userUsableGroups, null, 2),
     TopupGroupRatio: JSON.stringify(topupGroupRatio, null, 2),
+    GroupDisableSubscription: JSON.stringify(groupDisableSubscription, null, 2),
   }
 }
 
@@ -211,18 +225,24 @@ function groupPricingSignature(rows: GroupPricingRow[]): string {
     groupRatio: parseRatioMap(serialized.GroupRatio),
     userUsableGroups: parseUsableMap(serialized.UserUsableGroups),
     topupGroupRatio: parseRatioMap(serialized.TopupGroupRatio),
+    groupDisableSubscription: JSON.parse(serialized.GroupDisableSubscription),
   })
 }
 
 function sourceGroupPricingSignature(
   groupRatio: string,
   userUsableGroups: string,
-  topupGroupRatio: string
+  topupGroupRatio: string,
+  groupDisableSubscription: string
 ): string {
   return JSON.stringify({
     groupRatio: parseRatioMap(groupRatio),
     userUsableGroups: parseUsableMap(userUsableGroups),
     topupGroupRatio: parseRatioMap(topupGroupRatio),
+    groupDisableSubscription: safeJsonParse<Record<string, boolean>>(
+      groupDisableSubscription,
+      { fallback: {}, silent: true }
+    ),
   })
 }
 
@@ -271,6 +291,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
   onSectionChange,
   defaultUseAutoGroupField,
   groupRatio,
+  groupDisableSubscription,
   topupGroupRatio,
   userUsableGroups,
   groupGroupRatio,
@@ -287,16 +308,21 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
     const ratioMap = parseRatioMap(groupRatio)
     const usableMap = parseUsableMap(userUsableGroups)
     const topupMap = parseRatioMap(topupGroupRatio)
+    const subscriptionMap = safeJsonParse<Record<string, boolean>>(
+      groupDisableSubscription,
+      { fallback: {}, silent: true }
+    )
     const names = new Set([
       ...Object.keys(ratioMap),
       ...Object.keys(usableMap),
       ...Object.keys(topupMap),
+      ...Object.keys(subscriptionMap),
     ])
     return [...names].map((name) => ({
       name,
       ratio: normalizeRatio(ratioMap[name]),
     }))
-  }, [groupRatio, userUsableGroups, topupGroupRatio])
+  }, [groupRatio, userUsableGroups, topupGroupRatio, groupDisableSubscription])
 
   const registryNames = useMemo(
     () => registry.map((entry) => entry.name),
@@ -368,6 +394,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
       <TabsContent value='pricing' keepMounted>
         <GroupPricingTable
           groupRatio={groupRatio}
+          groupDisableSubscription={groupDisableSubscription}
           userUsableGroups={userUsableGroups}
           topupGroupRatio={topupGroupRatio}
           onChange={onChange}
@@ -473,6 +500,7 @@ export const GroupRatioVisualEditor = memo(function GroupRatioVisualEditor({
 
 type GroupPricingTableProps = {
   groupRatio: string
+  groupDisableSubscription: string
   userUsableGroups: string
   topupGroupRatio: string
   onChange: (field: string, value: string) => void
@@ -481,6 +509,7 @@ type GroupPricingTableProps = {
 
 function GroupPricingTable({
   groupRatio,
+  groupDisableSubscription,
   userUsableGroups,
   topupGroupRatio,
   onChange,
@@ -489,14 +518,20 @@ function GroupPricingTable({
   const { t } = useTranslation()
   const [search, setSearch] = useState('')
   const [rows, setRows] = useState<GroupPricingRow[]>(() =>
-    buildGroupPricingRows(groupRatio, userUsableGroups, topupGroupRatio)
+    buildGroupPricingRows(
+      groupRatio,
+      userUsableGroups,
+      topupGroupRatio,
+      groupDisableSubscription
+    )
   )
 
   useEffect(() => {
     const incomingSignature = sourceGroupPricingSignature(
       groupRatio,
       userUsableGroups,
-      topupGroupRatio
+      topupGroupRatio,
+      groupDisableSubscription
     )
     setRows((currentRows) => {
       if (groupPricingSignature(currentRows) === incomingSignature) {
@@ -505,10 +540,11 @@ function GroupPricingTable({
       return buildGroupPricingRows(
         groupRatio,
         userUsableGroups,
-        topupGroupRatio
+        topupGroupRatio,
+        groupDisableSubscription
       )
     })
-  }, [groupRatio, userUsableGroups, topupGroupRatio])
+  }, [groupRatio, userUsableGroups, topupGroupRatio, groupDisableSubscription])
 
   const emitRows = useCallback(
     (nextRows: GroupPricingRow[]) => {
@@ -517,6 +553,7 @@ function GroupPricingTable({
       onChange('GroupRatio', serialized.GroupRatio)
       onChange('UserUsableGroups', serialized.UserUsableGroups)
       onChange('TopupGroupRatio', serialized.TopupGroupRatio)
+      onChange('GroupDisableSubscription', serialized.GroupDisableSubscription)
     },
     [onChange]
   )
@@ -551,6 +588,7 @@ function GroupPricingTable({
         topupRatio: '',
         selectable: true,
         description: '',
+        disableSubscription: false,
       },
       ...rows,
     ])
@@ -592,6 +630,9 @@ function GroupPricingTable({
             <CardDescription>
               {t(
                 'All group names live here. Ratio applies when calls are billed as this group; top-up ratio applies to users whose account is in this group.'
+              )}{' '}
+              {t(
+                'Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.'
               )}
             </CardDescription>
           </div>
@@ -715,6 +756,26 @@ function GroupPricingTable({
                         updateRow(row._id, 'selectable', checked === true)
                       }
                       aria-label={t('User selectable')}
+                    />
+                  </div>
+                ),
+              },
+              {
+                id: 'disable-subscription',
+                header: t('Disallow subscription deductions'),
+                className: 'w-36 text-center',
+                cell: (row) => (
+                  <div className='flex justify-center'>
+                    <Checkbox
+                      checked={row.disableSubscription}
+                      onCheckedChange={(checked) =>
+                        updateRow(
+                          row._id,
+                          'disableSubscription',
+                          checked === true
+                        )
+                      }
+                      aria-label={t('Disallow subscription deductions')}
                     />
                   </div>
                 ),

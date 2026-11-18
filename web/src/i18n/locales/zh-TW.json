@@ -7792,6 +7792,9 @@
     "Zhipu": "智譜",
     "Zhipu GLM": "智譜GLM",
     "Zhipu V4": "智譜 V4",
-    "Zoom": "縮放"
+    "Zoom": "縮放",
+    "Disallow subscription deductions": "不允許從訂閱抵扣",
+    "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.": "勾選的群組使用錢包扣費；使用者選擇「僅訂閱」時回傳餘額不足。",
+    "Expected a JSON object mapping group names to booleans": "應為將群組名稱對應至布林值的 JSON 物件"
   }
 }

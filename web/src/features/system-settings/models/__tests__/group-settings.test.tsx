@@ -43,6 +43,7 @@ const defaults = {
   MaxTokenAutoGroups: 5,
   DefaultUseAutoGroup: false,
   GroupSpecialUsableGroup: '{}',
+  GroupDisableSubscription: '{}',
 }
 
 const schema = z.object({
@@ -54,6 +55,7 @@ const schema = z.object({
   MaxTokenAutoGroups: positiveIntegerSchema('Enter a positive integer'),
   DefaultUseAutoGroup: z.boolean(),
   GroupSpecialUsableGroup: z.string(),
+  GroupDisableSubscription: z.string(),
 })
 
 function Fixture(props: {
@@ -79,6 +81,71 @@ function Fixture(props: {
 }
 
 describe('group settings workspace', () => {
+  it('saves a group subscription restriction and keeps it attached when the group is renamed', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(<Fixture onSave={onSave} />)
+    const checkbox = screen.getAllByRole('checkbox', {
+      name: 'Disallow subscription deductions',
+    })[1]
+    expect(checkbox).not.toBeChecked()
+    checkbox.focus()
+    await user.keyboard(' ')
+    expect(checkbox).toBeChecked()
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(
+      JSON.parse(onSave.mock.calls[0][0].GroupDisableSubscription)
+    ).toEqual({ vip: true })
+    const name = screen.getAllByRole('textbox', { name: 'Group name' })[1]
+    await user.clear(name)
+    await user.type(name, 'PayAsYouGo')
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(2))
+    expect(
+      JSON.parse(onSave.mock.calls[1][0].GroupDisableSubscription)
+    ).toEqual({ PayAsYouGo: true })
+    await user.click(checkbox)
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(3))
+    expect(
+      JSON.parse(onSave.mock.calls[2][0].GroupDisableSubscription)
+    ).toEqual({})
+  })
+
+  it('loads a saved subscription restriction and removes it when its group is deleted', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn(async (_values: typeof defaults) => {})
+    render(
+      <Fixture
+        onSave={onSave}
+        initial={{ GroupDisableSubscription: '{"vip":true}' }}
+      />
+    )
+    expect(
+      screen.getAllByRole('checkbox', {
+        name: 'Disallow subscription deductions',
+      })[1]
+    ).toBeChecked()
+    await user.click(screen.getAllByRole('button', { name: 'Delete' })[1])
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
+    await waitFor(() => expect(onSave).toHaveBeenCalledTimes(1))
+    expect(
+      JSON.parse(onSave.mock.calls[0][0].GroupDisableSubscription)
+    ).toEqual({})
+    expect(JSON.parse(onSave.mock.calls[0][0].GroupRatio)).toEqual({
+      default: 1,
+    })
+  })
+
   it('filters by description and clears search without discarding edits', async () => {
     const user = userEvent.setup()
     render(<Fixture />)
@@ -128,7 +195,9 @@ describe('group settings workspace', () => {
         .map((input) => input.value)
     ).toEqual(['group_2', 'group_1', 'default', 'vip'])
 
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     const saved = onSave.mock.calls[0][0]
     expect(JSON.parse(saved.GroupRatio)).toEqual({
@@ -201,7 +270,9 @@ describe('group settings workspace', () => {
     expect(screen.getByRole('button', { name: 'Move vip up' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'Move vip down' })).toBeDisabled()
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(onSave.mock.calls[0]?.[0]).toEqual(
       expect.objectContaining({
@@ -244,7 +315,9 @@ describe('group settings workspace', () => {
     )
     expect(screen.getByText('Not in pricing table')).toBeVisible()
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() => expect(onSave).toHaveBeenCalled())
     expect(JSON.parse(onSave.mock.calls[0][0].AutoGroups)).toEqual([
       'vip',
@@ -286,7 +359,9 @@ describe('group settings workspace', () => {
       { target: { value: '0' } }
     )
     await user.click(screen.getByRole('tab', { name: 'Pricing groups' }))
-    await user.click(screen.getByRole('button', { name: 'Save group settings' }))
+    await user.click(
+      screen.getByRole('button', { name: 'Save group settings' })
+    )
     await waitFor(() =>
       expect(
         screen.getByRole('tab', { name: 'Auto group order' })

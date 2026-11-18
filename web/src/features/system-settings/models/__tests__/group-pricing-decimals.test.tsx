@@ -26,6 +26,7 @@ import { GroupRatioVisualEditor } from '../group-ratio-visual-editor'
 function PricingFixture() {
   const [settings, setSettings] = useState<Record<string, string>>({
     GroupRatio: '{"default":1}',
+    GroupDisableSubscription: '{}',
     TopupGroupRatio: '{}',
     UserUsableGroups: '{}',
   })
@@ -36,6 +37,7 @@ function PricingFixture() {
         onSectionChange={() => {}}
         defaultUseAutoGroupField={null}
         groupRatio={settings.GroupRatio}
+        groupDisableSubscription={settings.GroupDisableSubscription}
         topupGroupRatio={settings.TopupGroupRatio}
         userUsableGroups={settings.UserUsableGroups}
         groupGroupRatio='{}'

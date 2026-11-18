@@ -7792,6 +7792,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Disallow subscription deductions": "Запретить списание из подписки",
+    "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.": "Группы с запретом списания из подписки оплачиваются из кошелька. Запросы в режиме «Только подписка» возвращают ошибку недостаточной квоты.",
+    "Expected a JSON object mapping group names to booleans": "Ожидается JSON-объект, сопоставляющий имена групп с логическими значениями"
   }
 }

@@ -7792,6 +7792,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Disallow subscription deductions": "Disallow subscription deductions",
+    "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.": "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.",
+    "Expected a JSON object mapping group names to booleans": "Expected a JSON object mapping group names to booleans"
   }
 }

@@ -7792,6 +7792,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V 4",
-    "Zoom": "ズーム"
+    "Zoom": "ズーム",
+    "Disallow subscription deductions": "サブスクリプションからの差し引きを禁止",
+    "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.": "禁止に設定したグループはウォレットから課金されます。「サブスクリプションのみ」のリクエストは残高不足エラーを返します。",
+    "Expected a JSON object mapping group names to booleans": "グループ名を真偽値に対応付ける JSON オブジェクトが必要です"
   }
 }

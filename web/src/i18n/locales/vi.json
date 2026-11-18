@@ -7792,6 +7792,9 @@
     "Zhipu": "Zhipu",
     "Zhipu GLM": "Zhipu GLM",
     "Zhipu V4": "Zhipu V4",
-    "Zoom": "Zoom"
+    "Zoom": "Zoom",
+    "Disallow subscription deductions": "Không cho phép khấu trừ từ gói đăng ký",
+    "Groups with subscription deductions disabled use wallet billing. Subscription-only requests return insufficient quota.": "Các nhóm không cho phép khấu trừ từ gói đăng ký sẽ thanh toán bằng ví. Yêu cầu ở chế độ chỉ dùng gói đăng ký sẽ trả về lỗi không đủ hạn mức.",
+    "Expected a JSON object mapping group names to booleans": "Cần một đối tượng JSON ánh xạ tên nhóm sang giá trị boolean"
   }
 }
